@@ -21,6 +21,7 @@ typedef struct {
     TickType_t last_accounting;
     bool usage_initialized;
     bool transition_initialized;
+    bool has_been_active;
 } thermostat_relay_t;
 
 const char *thermostat_mode_name(thermostat_mode_t mode);

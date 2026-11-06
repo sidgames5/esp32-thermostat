@@ -35,6 +35,23 @@ esp_err_t joystick_initialize(adc_oneshot_unit_handle_t *adc_handle)
     return result;
 }
 
+esp_err_t joystick_button_initialize(gpio_num_t button_pin)
+{
+    gpio_config_t button_config = {
+        .pin_bit_mask = 1ULL << button_pin,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    return gpio_config(&button_config);
+}
+
+bool joystick_button_is_pressed(gpio_num_t button_pin)
+{
+    return gpio_get_level(button_pin) == 0;
+}
+
 float joystick_normalize(int raw_value)
 {
     return ((raw_value / 4095.0f) * 2.0f - 1.0f) * -1.0f;

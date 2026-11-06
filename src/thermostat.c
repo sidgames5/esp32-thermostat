@@ -9,9 +9,13 @@
 #include "hardware_config.h"
 
 static const char *const TAG = "thermostat";
-static const TickType_t compressor_minimum_time =
+static const TickType_t compressor_minimum_on_time =
     pdMS_TO_TICKS(5 * 60 * 1000);
-static const TickType_t fan_minimum_time = pdMS_TO_TICKS(3 * 60 * 1000);
+static const TickType_t compressor_minimum_off_time =
+    pdMS_TO_TICKS(5 * 60 * 1000);
+static const TickType_t fan_minimum_on_time = pdMS_TO_TICKS(60 * 1000);
+static const TickType_t fan_pre_run_time = pdMS_TO_TICKS(10 * 1000);
+static const TickType_t fan_post_run_time = pdMS_TO_TICKS(60 * 1000);
 
 const char *thermostat_mode_name(thermostat_mode_t mode)
 {
@@ -51,7 +55,8 @@ static void force_relay_off(int pin, thermostat_relay_t *relay, TickType_t now)
 
 static void update_relay(int pin,
                          bool requested,
-                         TickType_t minimum_time,
+                         TickType_t minimum_on_time,
+                         TickType_t minimum_off_time,
                          TickType_t now,
                          thermostat_relay_t *relay)
 {
@@ -70,12 +75,20 @@ static void update_relay(int pin,
     }
 
     if (requested == relay->active ||
-        (!DEBUG_BYPASS_RELAY_TIMING && relay->transition_initialized &&
-         now - relay->last_transition < minimum_time)) {
+        (!DEBUG_BYPASS_RELAY_TIMING && requested && relay->has_been_active &&
+         relay->transition_initialized &&
+         now - relay->last_transition <
+             minimum_off_time) ||
+        (!DEBUG_BYPASS_RELAY_TIMING && !requested &&
+         relay->transition_initialized &&
+         now - relay->last_transition < minimum_on_time)) {
         return;
     }
 
     relay->active = requested;
+    if (requested) {
+        relay->has_been_active = true;
+    }
     relay->last_transition = now;
     relay->on_since = requested ? now : 0;
     relay->transition_initialized = true;
@@ -111,6 +124,11 @@ void thermostat_set_relays(thermostat_mode_t mode,
         thermostat_disable_relays(heating_relay, cooling_relay, fan_relay);
         return;
     }
+    if (mode == THERMOSTAT_OFF) {
+        thermostat_disable_relays(heating_relay, cooling_relay, fan_relay);
+        return;
+    }
+
     bool heating = false;
     bool cooling = false;
 
@@ -123,19 +141,46 @@ void thermostat_set_relays(thermostat_mode_t mode,
         cooling = temperature >= setpoint + hysteresis;
     }
 
+    bool heat_or_cool_requested = heating || cooling;
+    bool compressor_lockout =
+        (!DEBUG_BYPASS_RELAY_TIMING &&
+         ((!heating_relay->active && heating_relay->has_been_active &&
+           heating_relay->transition_initialized &&
+           now - heating_relay->last_transition <
+               compressor_minimum_off_time) ||
+          (!cooling_relay->active && cooling_relay->has_been_active &&
+           cooling_relay->transition_initialized &&
+           now - cooling_relay->last_transition <
+               compressor_minimum_off_time)));
+    bool compressor_recently_stopped =
+        (!heating_relay->active && heating_relay->has_been_active &&
+         heating_relay->transition_initialized &&
+         now - heating_relay->last_transition < fan_post_run_time) ||
+        (!cooling_relay->active && cooling_relay->has_been_active &&
+         cooling_relay->transition_initialized &&
+         now - cooling_relay->last_transition < fan_post_run_time);
     bool fan_requested = mode == THERMOSTAT_FAN ||
-                         heating || cooling ||
-                         heating_relay->active || cooling_relay->active;
-    update_relay(PIN_RELAY_FAN, fan_requested, fan_minimum_time,
+                         heat_or_cool_requested ||
+                         heating_relay->active || cooling_relay->active ||
+                         compressor_recently_stopped;
+    update_relay(PIN_RELAY_FAN, fan_requested, fan_minimum_on_time, 0,
                  now, fan_relay);
 
     bool heating_requested = heating && !cooling_relay->active &&
-                             fan_relay->active;
+                             fan_relay->active &&
+                             !compressor_lockout &&
+                             (DEBUG_BYPASS_RELAY_TIMING ||
+                              now - fan_relay->on_since >= fan_pre_run_time);
     bool cooling_requested = cooling && !heating_relay->active &&
-                             fan_relay->active;
-    update_relay(PIN_RELAY_HEAT, heating_requested, compressor_minimum_time,
+                             fan_relay->active &&
+                             !compressor_lockout &&
+                             (DEBUG_BYPASS_RELAY_TIMING ||
+                              now - fan_relay->on_since >= fan_pre_run_time);
+    update_relay(PIN_RELAY_HEAT, heating_requested,
+                 compressor_minimum_on_time, compressor_minimum_off_time,
                  now, heating_relay);
-    update_relay(PIN_RELAY_COOL, cooling_requested, compressor_minimum_time,
+    update_relay(PIN_RELAY_COOL, cooling_requested,
+                 compressor_minimum_on_time, compressor_minimum_off_time,
                  now, cooling_relay);
 }
 
