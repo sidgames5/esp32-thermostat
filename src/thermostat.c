@@ -1,9 +1,13 @@
 #include "thermostat.h"
 
+#include <math.h>
+
 #include "driver/gpio.h"
+#include "esp_log.h"
 #include "lcd.h"
 #include "hardware_config.h"
 
+static const char *const TAG = "thermostat";
 static const TickType_t compressor_minimum_time =
     pdMS_TO_TICKS(5 * 60 * 1000);
 static const TickType_t fan_minimum_time = pdMS_TO_TICKS(3 * 60 * 1000);
@@ -11,7 +15,36 @@ static const TickType_t fan_minimum_time = pdMS_TO_TICKS(3 * 60 * 1000);
 const char *thermostat_mode_name(thermostat_mode_t mode)
 {
     static const char *const names[] = {"OFF", "HEAT", "COOL", "AUTO", "FAN"};
+    if (mode < THERMOSTAT_OFF || mode > THERMOSTAT_FAN) {
+        return "INVALID";
+    }
     return names[mode];
+}
+
+static void account_relay_usage(thermostat_relay_t *relay, TickType_t now)
+{
+    if (!relay->usage_initialized) {
+        relay->window_started = now;
+        relay->last_accounting = now;
+        relay->usage_initialized = true;
+        return;
+    }
+    if (now - relay->window_started >=
+        pdMS_TO_TICKS(THERMOSTAT_DUTY_WINDOW_MS)) {
+        relay->window_started = now;
+        relay->on_time_in_window = 0;
+    } else if (relay->active) {
+        relay->on_time_in_window += now - relay->last_accounting;
+    }
+    relay->last_accounting = now;
+}
+
+static void force_relay_off(int pin, thermostat_relay_t *relay, TickType_t now)
+{
+    relay->active = false;
+    relay->last_transition = now;
+    relay->on_since = 0;
+    gpio_set_level(pin, 0);
 }
 
 static void update_relay(int pin,
@@ -20,6 +53,18 @@ static void update_relay(int pin,
                          TickType_t now,
                          thermostat_relay_t *relay)
 {
+    account_relay_usage(relay, now);
+    if (relay->active &&
+        (now - relay->on_since >=
+             pdMS_TO_TICKS(THERMOSTAT_MAX_CONTINUOUS_RUNTIME_MS) ||
+         relay->on_time_in_window >= pdMS_TO_TICKS(THERMOSTAT_MAX_DUTY_MS))) {
+        ESP_LOGE(TAG, "Relay safety limit reached on GPIO %d", pin);
+        force_relay_off(pin, relay, now);
+        requested = false;
+    }
+    if (relay->on_time_in_window >= pdMS_TO_TICKS(THERMOSTAT_MAX_DUTY_MS)) {
+        requested = false;
+    }
     if (requested == relay->active ||
         now - relay->last_transition < minimum_time) {
         return;
@@ -27,6 +72,7 @@ static void update_relay(int pin,
 
     relay->active = requested;
     relay->last_transition = now;
+    relay->on_since = requested ? now : 0;
     gpio_set_level(pin, relay->active);
 }
 
@@ -39,7 +85,23 @@ void thermostat_set_relays(thermostat_mode_t mode,
                            thermostat_relay_t *fan_relay)
 {
     const float hysteresis = 1.0f;
+    if (mode < THERMOSTAT_OFF || mode > THERMOSTAT_FAN ||
+        !isfinite(temperature_celsius) || !isfinite(setpoint) ||
+        temperature_celsius < THERMOSTAT_MIN_VALID_TEMP_C ||
+        temperature_celsius > THERMOSTAT_MAX_VALID_TEMP_C ||
+        setpoint < THERMOSTAT_MIN_SETPOINT_F ||
+        setpoint > THERMOSTAT_MAX_SETPOINT_F) {
+        ESP_LOGE(TAG, "Invalid control state; disabling all relays");
+        thermostat_disable_relays(heating_relay, cooling_relay, fan_relay);
+        return;
+    }
+
     float temperature = temperature_celsius * 9.0f / 5.0f + 32.0f;
+    if (temperature >= THERMOSTAT_MAX_SAFE_TEMP_F) {
+        ESP_LOGE(TAG, "Over-temperature cutoff at %.1f F", temperature);
+        thermostat_disable_relays(heating_relay, cooling_relay, fan_relay);
+        return;
+    }
     bool heating = false;
     bool cooling = false;
 
@@ -66,6 +128,16 @@ void thermostat_set_relays(thermostat_mode_t mode,
                  now, heating_relay);
     update_relay(PIN_RELAY_COOL, cooling_requested, compressor_minimum_time,
                  now, cooling_relay);
+}
+
+void thermostat_disable_relays(thermostat_relay_t *heating_relay,
+                               thermostat_relay_t *cooling_relay,
+                               thermostat_relay_t *fan_relay)
+{
+    TickType_t now = xTaskGetTickCount();
+    force_relay_off(PIN_RELAY_HEAT, heating_relay, now);
+    force_relay_off(PIN_RELAY_COOL, cooling_relay, now);
+    force_relay_off(PIN_RELAY_FAN, fan_relay, now);
 }
 
 void thermostat_show_reading(const dht11_reading_t *reading,

@@ -1,6 +1,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include <math.h>
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
 
@@ -11,6 +12,7 @@
 #include "lcd.h"
 #include "mqtt.h"
 #include "thermostat.h"
+#include "hardware_config.h"
 #include "wifi.h"
 
 static const char *const TAG = "thermostat";
@@ -43,11 +45,11 @@ static thermostat_mode_t next_mode(thermostat_mode_t mode, int direction)
 static float next_setpoint(float setpoint, int direction)
 {
     setpoint += direction * 0.5f;
-    if (setpoint < 50.0f) {
-        return 50.0f;
+    if (setpoint < THERMOSTAT_MIN_SETPOINT_F) {
+        return THERMOSTAT_MIN_SETPOINT_F;
     }
-    if (setpoint > 95.0f) {
-        return 95.0f;
+    if (setpoint > THERMOSTAT_MAX_SETPOINT_F) {
+        return THERMOSTAT_MAX_SETPOINT_F;
     }
     return setpoint;
 }
@@ -159,10 +161,12 @@ static void thermostat_task(void *arg)
     int last_vertical_direction = 0;
     TickType_t last_control_action = 0;
     TickType_t last_loading_update = 0;
+    TickType_t last_sensor_reading = 0;
     uint8_t loading_frame = 0;
-    thermostat_relay_t heating_relay = {false, 0};
-    thermostat_relay_t cooling_relay = {false, 0};
-    thermostat_relay_t fan_relay = {false, 0};
+    bool sensor_timeout_reported = false;
+    thermostat_relay_t heating_relay = {0};
+    thermostat_relay_t cooling_relay = {0};
+    thermostat_relay_t fan_relay = {0};
 
     thermostat_show_loading(0);
 
@@ -171,6 +175,17 @@ static void thermostat_task(void *arg)
         bool received = xQueueReceive(
             app_event_queue, &event, pdMS_TO_TICKS(100)) == pdTRUE;
         TickType_t now = xTaskGetTickCount();
+
+        if (have_reading &&
+            now - last_sensor_reading >=
+                pdMS_TO_TICKS(THERMOSTAT_SENSOR_TIMEOUT_MS)) {
+            thermostat_disable_relays(
+                &heating_relay, &cooling_relay, &fan_relay);
+            if (!sensor_timeout_reported) {
+                ESP_LOGE(TAG, "Sensor data stale; disabling all relays");
+                sensor_timeout_reported = true;
+            }
+        }
 
         if (!have_reading &&
             now - last_loading_update >= pdMS_TO_TICKS(500)) {
@@ -189,8 +204,23 @@ static void thermostat_task(void *arg)
                 &last_control_action, have_reading, &last_reading,
                 &heating_relay, &cooling_relay, &fan_relay);
         } else if (event.type == APP_EVENT_SENSOR_READING) {
+            if (!isfinite(event.sensor_reading.temperature) ||
+                !isfinite(event.sensor_reading.humidity) ||
+                event.sensor_reading.temperature <
+                    THERMOSTAT_MIN_VALID_TEMP_C ||
+                event.sensor_reading.temperature >
+                    THERMOSTAT_MAX_VALID_TEMP_C ||
+                event.sensor_reading.humidity < 0.0f ||
+                event.sensor_reading.humidity > 100.0f) {
+                ESP_LOGE(TAG, "Ignoring invalid sensor reading");
+                thermostat_disable_relays(
+                    &heating_relay, &cooling_relay, &fan_relay);
+                continue;
+            }
             last_reading = event.sensor_reading;
             have_reading = true;
+            last_sensor_reading = now;
+            sensor_timeout_reported = false;
             mqtt_publish_temperature(&last_reading);
             thermostat_set_relays(mode, last_reading.temperature, setpoint, now,
                                   &heating_relay, &cooling_relay, &fan_relay);
@@ -213,7 +243,9 @@ static void thermostat_task(void *arg)
                          event.mode);
             }
         } else if (event.type == APP_EVENT_SET_SETPOINT) {
-            if (event.setpoint >= 50.0f && event.setpoint <= 95.0f) {
+            if (isfinite(event.setpoint) &&
+                event.setpoint >= THERMOSTAT_MIN_SETPOINT_F &&
+                event.setpoint <= THERMOSTAT_MAX_SETPOINT_F) {
                 setpoint = event.setpoint;
                 if (have_reading) {
                     thermostat_set_relays(
@@ -226,6 +258,11 @@ static void thermostat_task(void *arg)
                 ESP_LOGW(TAG, "Ignoring invalid thermostat setpoint: %.1f",
                          event.setpoint);
             }
+        } else {
+            ESP_LOGE(TAG, "Illegal application event type: %d; disabling relays",
+                     event.type);
+            thermostat_disable_relays(
+                &heating_relay, &cooling_relay, &fan_relay);
         }
     }
 }

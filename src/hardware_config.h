@@ -20,3 +20,15 @@
 
 #define LCD_COLUMNS 16
 #define LCD_ROWS 2
+
+/* Safety limits are intentionally conservative until production sensors and
+ * independently monitored hardware cutoffs are installed. */
+#define THERMOSTAT_MIN_SETPOINT_F 50.0f
+#define THERMOSTAT_MAX_SETPOINT_F 95.0f
+#define THERMOSTAT_MIN_VALID_TEMP_C (-40.0f)
+#define THERMOSTAT_MAX_VALID_TEMP_C 80.0f
+#define THERMOSTAT_MAX_SAFE_TEMP_F 100.0f
+#define THERMOSTAT_SENSOR_TIMEOUT_MS 10000
+#define THERMOSTAT_MAX_CONTINUOUS_RUNTIME_MS (30 * 60 * 1000)
+#define THERMOSTAT_DUTY_WINDOW_MS (60 * 60 * 1000)
+#define THERMOSTAT_MAX_DUTY_MS (30 * 60 * 1000)

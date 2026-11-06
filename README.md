@@ -29,3 +29,5 @@ retained state to `<base>/temperature/current`, `<base>/temperature/target`,
 and `<base>/mode`, and accepts commands on
 `<base>/temperature/target/set` (degrees Fahrenheit) and `<base>/mode/set`
 (`OFF`, `HEAT`, `COOL`, `AUTO`, or `FAN`).
+
+Protocols to be supported in the future: Matter/IP, BACnet/IP, Zigbee (on supported ESP32 models), Matter/Thread (on supported ESP32 models)
