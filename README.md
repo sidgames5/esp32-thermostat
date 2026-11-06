@@ -20,6 +20,8 @@ relay and LCD state. Wi-Fi, MQTT, Zigbee, or other connectivity tasks can
 publish control events through the same queue without adding more polling logic
 to the thermostat task. Wi-Fi and MQTT use this integration today.
 
+**IMPORTANT**: Rename `src/Configuration_example.h` to `src/Configuration.h` and fill out all the fields in there before building
+
 ## Building Automation
 
 MQTT is supported when `ENABLE_MQTT` is defined in
