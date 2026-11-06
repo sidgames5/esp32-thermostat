@@ -1,3 +1,13 @@
+// | ~~~~~~~~~~~~~~~~~~~~~~~ |
+// |                         |
+// |     CONFIGURATION.H     |
+// |                         |
+// | ~~~~~~~~~~~~~~~~~~~~~~~ |
+
+// | ~~~~~~~~~~~~~ |
+// |     Wi-Fi     |
+// | ~~~~~~~~~~~~~ |
+
 #define ENABLE_WIFI
 
 #ifdef ENABLE_WIFI
@@ -6,6 +16,10 @@
 #define WIFI_PASSWORD "your-wifi-password"
 
 #endif
+
+// | ~~~~~~~~~~~~ |
+// |     MQTT     |
+// | ~~~~~~~~~~~~ |
 
 #define ENABLE_MQTT
 
