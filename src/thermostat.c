@@ -20,7 +20,7 @@ static const TickType_t fan_post_run_time = pdMS_TO_TICKS(60 * 1000);
 
 const char *thermostat_mode_name(thermostat_mode_t mode)
 {
-    static const char *const names[] = {"OFF", "HEAT", "COOL", "AUTO", "FAN"};
+    static const char *const names[] = {"OFF", "AUTO", "FAN"};
     if (mode < THERMOSTAT_OFF || mode > THERMOSTAT_FAN) {
         return "INVALID";
     }
@@ -98,7 +98,8 @@ static void update_relay(int pin,
 
 void thermostat_set_relays(thermostat_mode_t mode,
                            float temperature_celsius,
-                           float setpoint,
+                           float lower_setpoint,
+                           float upper_setpoint,
                            TickType_t now,
                            thermostat_relay_t *heating_relay,
                            thermostat_relay_t *cooling_relay,
@@ -110,9 +111,10 @@ void thermostat_set_relays(thermostat_mode_t mode,
          (!isfinite(temperature_celsius) ||
           temperature_celsius < THERMOSTAT_MIN_VALID_TEMP_C ||
           temperature_celsius > THERMOSTAT_MAX_VALID_TEMP_C)) ||
-        !isfinite(setpoint) ||
-        setpoint < THERMOSTAT_MIN_SETPOINT_F ||
-        setpoint > THERMOSTAT_MAX_SETPOINT_F) {
+        !isfinite(lower_setpoint) || !isfinite(upper_setpoint) ||
+        lower_setpoint < THERMOSTAT_MIN_SETPOINT_F ||
+        upper_setpoint > THERMOSTAT_MAX_SETPOINT_F ||
+        lower_setpoint > upper_setpoint) {
         ESP_LOGE(TAG, "Invalid control state; disabling all relays");
         thermostat_disable_relays(heating_relay, cooling_relay, fan_relay);
         return;
@@ -144,13 +146,9 @@ void thermostat_set_relays(thermostat_mode_t mode,
     bool heating = false;
     bool cooling = false;
 
-    if (mode == THERMOSTAT_HEAT) {
-        heating = temperature <= setpoint - hysteresis;
-    } else if (mode == THERMOSTAT_COOL) {
-        cooling = temperature >= setpoint + hysteresis;
-    } else if (mode == THERMOSTAT_AUTO) {
-        heating = temperature <= setpoint - hysteresis;
-        cooling = temperature >= setpoint + hysteresis;
+    if (mode == THERMOSTAT_AUTO) {
+        heating = temperature <= lower_setpoint - hysteresis;
+        cooling = temperature >= upper_setpoint + hysteresis;
     }
 
     bool heat_or_cool_requested = heating || cooling;
@@ -207,10 +205,13 @@ void thermostat_disable_relays(thermostat_relay_t *heating_relay,
 }
 
 void thermostat_show_reading(const dht11_reading_t *reading,
-                             float setpoint,
+                             float lower_setpoint,
+                             float upper_setpoint,
+                             bool editing_upper_setpoint,
                              thermostat_mode_t mode,
                              bool show_ip)
 {
+    float setpoint = editing_upper_setpoint ? upper_setpoint : lower_setpoint;
     float temperature = reading->temperature * 9.0f / 5.0f + 32.0f;
     if (show_ip) {
         char ip_address[16];
@@ -222,7 +223,8 @@ void thermostat_show_reading(const dht11_reading_t *reading,
     } else {
         lcd_printf_line(0, "Now %4.1fF", temperature);
     }
-    lcd_printf_line(1, "Set %4.1fF %-4s", setpoint,
+    lcd_printf_line(1, "Set%c%4.1fF %-4s",
+                    editing_upper_setpoint ? 'H' : 'L', setpoint,
                     thermostat_mode_name(mode));
 }
 

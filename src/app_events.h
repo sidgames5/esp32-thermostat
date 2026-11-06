@@ -19,7 +19,10 @@ typedef struct {
         } joystick;
         dht11_reading_t sensor_reading;
         thermostat_mode_t mode;
-        float setpoint;
+        struct {
+            float lower;
+            float upper;
+        } setpoint;
     };
 } app_event_t;
 

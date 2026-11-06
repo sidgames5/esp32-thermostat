@@ -42,9 +42,12 @@ optional credentials, client ID, base topic, and Home Assistant discovery
 prefix there. On connection it publishes a retained MQTT Climate discovery
 entity under `<discovery-prefix>/climate/<client-id>/config`. The firmware
 publishes retained state to `<base>/temperature/current`,
-`<base>/temperature/target`, and `<base>/mode`, and accepts commands on
-`<base>/temperature/target/set` and `<base>/mode/set`. Home Assistant uses
-`off`, `heat`, `cool`, `heat_cool`, and `fan_only`; the legacy `OFF`, `HEAT`,
-`COOL`, `AUTO`, and `FAN` values remain accepted.
+`<base>/temperature/low`, `<base>/temperature/high`, and `<base>/mode`, and
+accepts commands on `<base>/temperature/low/set`,
+`<base>/temperature/high/set`, and `<base>/mode/set`. The low and high
+temperatures are the heating and cooling bounds. The joystick moves left or
+right to select a bound and up or down to adjust it; the LCD displays the
+selected bound. Home Assistant uses `off`, `heat_cool`, and `fan_only`;
+legacy heat and cool commands are treated as auto.
 
 Protocols to be supported in the future: Matter/IP, BACnet/IP, Zigbee (on supported ESP32 models), Matter/Thread (on supported ESP32 models)

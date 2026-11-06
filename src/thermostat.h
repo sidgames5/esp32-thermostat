@@ -6,8 +6,6 @@
 
 typedef enum {
     THERMOSTAT_OFF,
-    THERMOSTAT_HEAT,
-    THERMOSTAT_COOL,
     THERMOSTAT_AUTO,
     THERMOSTAT_FAN,
 } thermostat_mode_t;
@@ -27,7 +25,8 @@ typedef struct {
 const char *thermostat_mode_name(thermostat_mode_t mode);
 void thermostat_set_relays(thermostat_mode_t mode,
                            float temperature_celsius,
-                           float setpoint,
+                           float lower_setpoint,
+                           float upper_setpoint,
                            TickType_t now,
                            thermostat_relay_t *heating_relay,
                            thermostat_relay_t *cooling_relay,
@@ -36,7 +35,9 @@ void thermostat_disable_relays(thermostat_relay_t *heating_relay,
                                thermostat_relay_t *cooling_relay,
                                thermostat_relay_t *fan_relay);
 void thermostat_show_reading(const dht11_reading_t *reading,
-                             float setpoint,
+                             float lower_setpoint,
+                             float upper_setpoint,
+                             bool editing_upper_setpoint,
                              thermostat_mode_t mode,
                              bool show_ip);
 void thermostat_show_loading(uint8_t frame);

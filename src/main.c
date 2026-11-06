@@ -32,27 +32,22 @@ esp_err_t app_post_event(const app_event_t *event)
                : ESP_ERR_TIMEOUT;
 }
 
-static thermostat_mode_t next_mode(thermostat_mode_t mode, int direction)
+static bool valid_setpoints(float lower, float upper)
 {
-    int value = (int)mode + direction;
-    if (value < THERMOSTAT_OFF) {
-        value = THERMOSTAT_FAN;
-    } else if (value > THERMOSTAT_FAN) {
-        value = THERMOSTAT_OFF;
-    }
-    return (thermostat_mode_t)value;
+    return isfinite(lower) && isfinite(upper) &&
+           lower >= THERMOSTAT_MIN_SETPOINT_F &&
+           upper <= THERMOSTAT_MAX_SETPOINT_F && lower <= upper;
 }
 
-static float next_setpoint(float setpoint, int direction)
+static bool adjust_setpoint(float *setpoint, int direction)
 {
-    setpoint += direction * 0.5f;
-    if (setpoint < THERMOSTAT_MIN_SETPOINT_F) {
-        return THERMOSTAT_MIN_SETPOINT_F;
+    float next = *setpoint + direction * 0.5f;
+    if (next < THERMOSTAT_MIN_SETPOINT_F ||
+        next > THERMOSTAT_MAX_SETPOINT_F) {
+        return false;
     }
-    if (setpoint > THERMOSTAT_MAX_SETPOINT_F) {
-        return THERMOSTAT_MAX_SETPOINT_F;
-    }
-    return setpoint;
+    *setpoint = next;
+    return true;
 }
 
 static void joystick_task(void *arg)
@@ -130,7 +125,9 @@ static void sensor_task(void *arg)
 static void apply_joystick_event(const app_event_t *event,
                                  TickType_t now,
                                  thermostat_mode_t *mode,
-                                 float *setpoint,
+                                 float *lower_setpoint,
+                                 float *upper_setpoint,
+                                 bool *editing_upper_setpoint,
                                  int *last_horizontal_direction,
                                  int *last_vertical_direction,
                                  TickType_t *last_control_action,
@@ -155,29 +152,30 @@ static void apply_joystick_event(const app_event_t *event,
 
     if (now - *last_control_action >= control_cooldown &&
         (new_horizontal_direction || new_vertical_direction)) {
-        bool mode_changed = false;
         bool setpoint_changed = false;
         if (new_horizontal_direction) {
-            *mode = next_mode(*mode, horizontal_direction);
-            mode_changed = true;
+            *editing_upper_setpoint = horizontal_direction > 0;
         }
         if (new_vertical_direction) {
-            *setpoint = next_setpoint(*setpoint, vertical_direction);
-            setpoint_changed = true;
+            float *selected_setpoint = *editing_upper_setpoint
+                                            ? upper_setpoint
+                                            : lower_setpoint;
+            setpoint_changed = adjust_setpoint(selected_setpoint,
+                                               vertical_direction);
         }
         *last_control_action = now;
 
-        if (mode_changed) {
-            mqtt_publish_mode(*mode);
-        }
         if (setpoint_changed) {
-            mqtt_publish_target_temperature(*setpoint);
+            mqtt_publish_target_temperature(*lower_setpoint, *upper_setpoint);
         }
         if (have_reading) {
-            thermostat_set_relays(*mode, last_reading->temperature, *setpoint,
+            thermostat_set_relays(*mode, last_reading->temperature,
+                                  *lower_setpoint, *upper_setpoint,
                                   now, heating_relay, cooling_relay,
                                   fan_relay);
-            thermostat_show_reading(last_reading, *setpoint, *mode, show_ip);
+            thermostat_show_reading(last_reading, *lower_setpoint,
+                                    *upper_setpoint, *editing_upper_setpoint,
+                                    *mode, show_ip);
         }
     }
 
@@ -189,7 +187,9 @@ static void thermostat_task(void *arg)
 {
     (void)arg;
     thermostat_mode_t mode = THERMOSTAT_OFF;
-    float setpoint = 72.0f;
+    float lower_setpoint = 70.0f;
+    float upper_setpoint = 74.0f;
+    bool editing_upper_setpoint = false;
     dht11_reading_t last_reading = {0};
     bool have_reading = false;
     int last_horizontal_direction = 0;
@@ -213,7 +213,7 @@ static void thermostat_task(void *arg)
 
     thermostat_show_loading(0);
     mqtt_publish_mode(mode);
-    mqtt_publish_target_temperature(setpoint);
+    mqtt_publish_target_temperature(lower_setpoint, upper_setpoint);
 
     for (;;) {
         app_event_t event;
@@ -236,7 +236,9 @@ static void thermostat_task(void *arg)
             show_ip = !show_ip;
             next_display_switch = now + pdMS_TO_TICKS(2000);
             if (have_reading) {
-                thermostat_show_reading(&last_reading, setpoint, mode, show_ip);
+                thermostat_show_reading(&last_reading, lower_setpoint,
+                                        upper_setpoint, editing_upper_setpoint,
+                                        mode, show_ip);
             }
         }
 
@@ -246,7 +248,8 @@ static void thermostat_task(void *arg)
 
         if (event.type == APP_EVENT_JOYSTICK) {
             apply_joystick_event(
-                &event, now, &mode, &setpoint,
+                &event, now, &mode, &lower_setpoint, &upper_setpoint,
+                &editing_upper_setpoint,
                 &last_horizontal_direction, &last_vertical_direction,
                 &last_control_action, have_reading, &last_reading,
                 show_ip,
@@ -271,9 +274,12 @@ static void thermostat_task(void *arg)
             last_sensor_reading = now;
             sensor_timeout_reported = false;
             mqtt_publish_temperature(&last_reading);
-            thermostat_set_relays(mode, last_reading.temperature, setpoint, now,
+            thermostat_set_relays(mode, last_reading.temperature,
+                                  lower_setpoint, upper_setpoint, now,
                                   &heating_relay, &cooling_relay, &fan_relay);
-            thermostat_show_reading(&last_reading, setpoint, mode, show_ip);
+            thermostat_show_reading(&last_reading, lower_setpoint,
+                                    upper_setpoint, editing_upper_setpoint,
+                                    mode, show_ip);
             if (now - last_success_log >= pdMS_TO_TICKS(30000)) {
                 ESP_LOGI(TAG, "DHT11 temperature: %.1f C, humidity: %.1f%%",
                          last_reading.temperature, last_reading.humidity);
@@ -285,10 +291,12 @@ static void thermostat_task(void *arg)
                 mode = event.mode;
                 if (have_reading) {
                     thermostat_set_relays(
-                        mode, last_reading.temperature, setpoint, now,
+                        mode, last_reading.temperature, lower_setpoint,
+                        upper_setpoint, now,
                         &heating_relay, &cooling_relay, &fan_relay);
                     thermostat_show_reading(
-                        &last_reading, setpoint, mode, show_ip);
+                        &last_reading, lower_setpoint, upper_setpoint,
+                        editing_upper_setpoint, mode, show_ip);
                 }
                 mqtt_publish_mode(mode);
             } else {
@@ -296,21 +304,35 @@ static void thermostat_task(void *arg)
                          event.mode);
             }
         } else if (event.type == APP_EVENT_SET_SETPOINT) {
-            if (isfinite(event.setpoint) &&
-                event.setpoint >= THERMOSTAT_MIN_SETPOINT_F &&
-                event.setpoint <= THERMOSTAT_MAX_SETPOINT_F) {
-                setpoint = event.setpoint;
+            float requested_lower = event.setpoint.lower;
+            float requested_upper = event.setpoint.upper;
+            if (isfinite(requested_lower) && isfinite(requested_upper)) {
+                float current_mean = (lower_setpoint + upper_setpoint) / 2.0f;
+                float requested_mean = (requested_lower + requested_upper) / 2.0f;
+                float shift = requested_mean - current_mean;
+                requested_lower = lower_setpoint + shift;
+                requested_upper = upper_setpoint + shift;
+            } else if (isfinite(requested_lower)) {
+                requested_upper = upper_setpoint;
+            } else if (isfinite(requested_upper)) {
+                requested_lower = lower_setpoint;
+            }
+            if (valid_setpoints(requested_lower, requested_upper)) {
+                lower_setpoint = requested_lower;
+                upper_setpoint = requested_upper;
                 if (have_reading) {
                     thermostat_set_relays(
-                        mode, last_reading.temperature, setpoint, now,
+                        mode, last_reading.temperature, lower_setpoint,
+                        upper_setpoint, now,
                         &heating_relay, &cooling_relay, &fan_relay);
                     thermostat_show_reading(
-                        &last_reading, setpoint, mode, show_ip);
+                        &last_reading, lower_setpoint, upper_setpoint,
+                        editing_upper_setpoint, mode, show_ip);
                 }
-                mqtt_publish_target_temperature(setpoint);
+                mqtt_publish_target_temperature(lower_setpoint, upper_setpoint);
             } else {
-                ESP_LOGW(TAG, "Ignoring invalid thermostat setpoint: %.1f",
-                         event.setpoint);
+                ESP_LOGW(TAG, "Ignoring invalid thermostat bounds: %.1f to %.1f",
+                         requested_lower, requested_upper);
             }
         } else {
             ESP_LOGE(TAG, "Illegal application event type: %d; disabling relays",

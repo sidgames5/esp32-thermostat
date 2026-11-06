@@ -1,6 +1,7 @@
 #include "mqtt.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +17,9 @@ static const char *const TAG = "mqtt";
 
 static esp_mqtt_client_handle_t client;
 static bool connected;
-static bool target_temperature_available;
-static float last_target_temperature;
+static bool temperature_bounds_available;
+static float last_lower_setpoint;
+static float last_upper_setpoint;
 static bool mode_available;
 static thermostat_mode_t last_mode;
 
@@ -30,10 +32,6 @@ static const char *ha_mode_name(thermostat_mode_t mode)
     switch (mode) {
     case THERMOSTAT_OFF:
         return "off";
-    case THERMOSTAT_HEAT:
-        return "heat";
-    case THERMOSTAT_COOL:
-        return "cool";
     case THERMOSTAT_AUTO:
         return "heat_cool";
     case THERMOSTAT_FAN:
@@ -71,18 +69,41 @@ static bool parse_float(const esp_mqtt_event_t *event, float *value)
 static void handle_command(const esp_mqtt_event_t *event)
 {
     char target_topic[96];
+    char lower_topic[96];
+    char upper_topic[96];
     char mode_topic[96];
     snprintf(target_topic, sizeof(target_topic), "%s/temperature/target/set",
              MQTT_BASE_TOPIC);
+    snprintf(lower_topic, sizeof(lower_topic),
+             "%s/temperature/low/set", MQTT_BASE_TOPIC);
+    snprintf(upper_topic, sizeof(upper_topic),
+             "%s/temperature/high/set", MQTT_BASE_TOPIC);
     snprintf(mode_topic, sizeof(mode_topic), "%s/mode/set", MQTT_BASE_TOPIC);
 
     app_event_t command = {0};
     if (topic_is(event, target_topic)) {
         command.type = APP_EVENT_SET_SETPOINT;
-        if (!parse_float(event, &command.setpoint)) {
+        float setpoint;
+        if (!parse_float(event, &setpoint)) {
             ESP_LOGW(TAG, "Ignoring invalid target temperature payload");
             return;
         }
+        command.setpoint.lower = setpoint;
+        command.setpoint.upper = setpoint;
+    } else if (topic_is(event, lower_topic)) {
+        command.type = APP_EVENT_SET_SETPOINT;
+        if (!parse_float(event, &command.setpoint.lower)) {
+            ESP_LOGW(TAG, "Ignoring invalid lower temperature payload");
+            return;
+        }
+        command.setpoint.upper = NAN;
+    } else if (topic_is(event, upper_topic)) {
+        command.type = APP_EVENT_SET_SETPOINT;
+        if (!parse_float(event, &command.setpoint.upper)) {
+            ESP_LOGW(TAG, "Ignoring invalid upper temperature payload");
+            return;
+        }
+        command.setpoint.lower = NAN;
     } else if (topic_is(event, mode_topic)) {
         char mode[16];
         if (event->data_len <= 0 || event->data_len >= (int)sizeof(mode)) {
@@ -95,9 +116,9 @@ static void handle_command(const esp_mqtt_event_t *event)
         if (strcmp(mode, "OFF") == 0 || strcmp(mode, "off") == 0) {
             command.mode = THERMOSTAT_OFF;
         } else if (strcmp(mode, "HEAT") == 0 || strcmp(mode, "heat") == 0) {
-            command.mode = THERMOSTAT_HEAT;
+            command.mode = THERMOSTAT_AUTO;
         } else if (strcmp(mode, "COOL") == 0 || strcmp(mode, "cool") == 0) {
-            command.mode = THERMOSTAT_COOL;
+            command.mode = THERMOSTAT_AUTO;
         } else if (strcmp(mode, "AUTO") == 0 ||
                    strcmp(mode, "heat_cool") == 0) {
             command.mode = THERMOSTAT_AUTO;
@@ -145,18 +166,31 @@ static void publish_discovery(void)
              "\"availability_topic\":\"%s/availability\","
              "\"mode_state_topic\":\"%s/mode\","
              "\"mode_command_topic\":\"%s/mode/set\","
-             "\"temperature_state_topic\":\"%s/temperature/target\","
-             "\"temperature_command_topic\":\"%s/temperature/target/set\","
+            //  "\"temperature_state_topic\":\"%s/temperature/target\","
+            //  "\"temperature_command_topic\":\"%s/temperature/target/set\","
+             "\"temperature_low_state_topic\":\"%s/temperature/low\","
+             "\"temperature_high_state_topic\":\"%s/temperature/high\","
+             "\"temperature_low_command_topic\":\"%s/temperature/low/set\","
+             "\"temperature_high_command_topic\":\"%s/temperature/high/set\","
              "\"current_temperature_topic\":\"%s/temperature/current\","
-             "\"modes\":[\"off\",\"heat\",\"cool\",\"heat_cool\",\"fan_only\"],"
+             "\"modes\":[\"off\",\"heat_cool\",\"fan_only\"],"
              "\"min_temp\":50,\"max_temp\":95,\"temp_step\":0.5,"
              "\"temperature_unit\":\"F\",\"payload_available\":\"online\","
              "\"payload_not_available\":\"offline\","
              "\"qos\":1,\"retain\":true}",
              MQTT_CLIENT_ID, MQTT_CLIENT_ID, MQTT_BASE_TOPIC,
              MQTT_BASE_TOPIC, MQTT_BASE_TOPIC, MQTT_BASE_TOPIC,
-             MQTT_BASE_TOPIC, MQTT_BASE_TOPIC);
+             MQTT_BASE_TOPIC,
+             MQTT_BASE_TOPIC, MQTT_BASE_TOPIC, MQTT_BASE_TOPIC);
     publish_topic(topic, payload);
+
+    snprintf(topic, sizeof(topic), "%s/number/%s_lower/config",
+             MQTT_DISCOVERY_PREFIX, MQTT_CLIENT_ID);
+    publish_topic(topic, "");
+
+    snprintf(topic, sizeof(topic), "%s/number/%s_upper/config",
+             MQTT_DISCOVERY_PREFIX, MQTT_CLIENT_ID);
+    publish_topic(topic, "");
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
@@ -174,14 +208,23 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                  "%s/temperature/target/set", MQTT_BASE_TOPIC);
         snprintf(mode_topic, sizeof(mode_topic), "%s/mode/set", MQTT_BASE_TOPIC);
         esp_mqtt_client_subscribe(client, target_topic, 1);
+        char lower_topic[96];
+        char upper_topic[96];
+        snprintf(lower_topic, sizeof(lower_topic),
+                 "%s/temperature/low/set", MQTT_BASE_TOPIC);
+        snprintf(upper_topic, sizeof(upper_topic),
+                 "%s/temperature/high/set", MQTT_BASE_TOPIC);
+        esp_mqtt_client_subscribe(client, lower_topic, 1);
+        esp_mqtt_client_subscribe(client, upper_topic, 1);
         esp_mqtt_client_subscribe(client, mode_topic, 1);
         publish_topic(MQTT_BASE_TOPIC "/availability", "online");
         publish_discovery();
-        if (target_temperature_available) {
+        if (temperature_bounds_available) {
             char payload[16];
-            snprintf(payload, sizeof(payload), "%.1f",
-                     last_target_temperature);
-            publish("temperature/target", payload);
+            snprintf(payload, sizeof(payload), "%.1f", last_lower_setpoint);
+            publish("temperature/low", payload);
+            snprintf(payload, sizeof(payload), "%.1f", last_upper_setpoint);
+            publish("temperature/high", payload);
         }
         if (mode_available) {
             publish("mode", ha_mode_name(last_mode));
@@ -264,16 +307,21 @@ void mqtt_publish_temperature(const dht11_reading_t *reading)
 #endif
 }
 
-void mqtt_publish_target_temperature(float setpoint)
+void mqtt_publish_target_temperature(float lower_setpoint,
+                                     float upper_setpoint)
 {
 #ifdef ENABLE_MQTT
-    last_target_temperature = setpoint;
-    target_temperature_available = true;
+    last_lower_setpoint = lower_setpoint;
+    last_upper_setpoint = upper_setpoint;
+    temperature_bounds_available = true;
     char payload[16];
-    snprintf(payload, sizeof(payload), "%.1f", setpoint);
-    publish("temperature/target", payload);
+    snprintf(payload, sizeof(payload), "%.1f", lower_setpoint);
+    publish("temperature/low", payload);
+    snprintf(payload, sizeof(payload), "%.1f", upper_setpoint);
+    publish("temperature/high", payload);
 #else
-    (void)setpoint;
+    (void)lower_setpoint;
+    (void)upper_setpoint;
 #endif
 }
 
