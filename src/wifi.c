@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include <string.h>
+#include <stdio.h>
 
 #include "esp_event.h"
 #include "esp_log.h"
@@ -16,6 +17,7 @@ static const char *const TAG = "wifi";
 static EventGroupHandle_t wifi_event_group;
 static esp_event_handler_instance_t wifi_event_handler_instance;
 static esp_event_handler_instance_t ip_event_handler_instance;
+static esp_netif_t *wifi_netif;
 
 enum {
     WIFI_CONNECTED_BIT = BIT0,
@@ -86,8 +88,8 @@ esp_err_t wifi_initialize(void)
         return result;
     }
 
-    esp_netif_t *netif = esp_netif_create_default_wifi_sta();
-    if (netif == NULL) {
+    wifi_netif = esp_netif_create_default_wifi_sta();
+    if (wifi_netif == NULL) {
         ESP_LOGE(TAG, "Failed to create Wi-Fi station interface");
         return ESP_ERR_NO_MEM;
     }
@@ -147,4 +149,25 @@ esp_err_t wifi_initialize(void)
     ESP_LOGE(TAG, "Timed out waiting for Wi-Fi connection");
     return ESP_ERR_TIMEOUT;
 #endif
+}
+
+bool wifi_get_ip_address(char *buffer, size_t buffer_size)
+{
+    if (buffer == NULL || buffer_size == 0) {
+        return false;
+    }
+
+    buffer[0] = '\0';
+    if (wifi_netif == NULL) {
+        return false;
+    }
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(wifi_netif, &ip_info) != ESP_OK ||
+        ip_info.ip.addr == 0) {
+        return false;
+    }
+
+    int written = snprintf(buffer, buffer_size, IPSTR, IP2STR(&ip_info.ip));
+    return written >= 0 && (size_t)written < buffer_size;
 }

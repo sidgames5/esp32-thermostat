@@ -17,6 +17,24 @@ static const char *const TAG = "mqtt";
 static esp_mqtt_client_handle_t client;
 static bool connected;
 
+static const char *ha_mode_name(thermostat_mode_t mode)
+{
+    switch (mode) {
+    case THERMOSTAT_OFF:
+        return "off";
+    case THERMOSTAT_HEAT:
+        return "heat";
+    case THERMOSTAT_COOL:
+        return "cool";
+    case THERMOSTAT_AUTO:
+        return "heat_cool";
+    case THERMOSTAT_FAN:
+        return "fan_only";
+    default:
+        return "off";
+    }
+}
+
 static bool topic_is(const esp_mqtt_event_t *event, const char *topic)
 {
     return event->topic_len == (int)strlen(topic) &&
@@ -66,15 +84,17 @@ static void handle_command(const esp_mqtt_event_t *event)
         memcpy(mode, event->data, event->data_len);
         mode[event->data_len] = '\0';
         command.type = APP_EVENT_SET_MODE;
-        if (strcmp(mode, "OFF") == 0) {
+        if (strcmp(mode, "OFF") == 0 || strcmp(mode, "off") == 0) {
             command.mode = THERMOSTAT_OFF;
-        } else if (strcmp(mode, "HEAT") == 0) {
+        } else if (strcmp(mode, "HEAT") == 0 || strcmp(mode, "heat") == 0) {
             command.mode = THERMOSTAT_HEAT;
-        } else if (strcmp(mode, "COOL") == 0) {
+        } else if (strcmp(mode, "COOL") == 0 || strcmp(mode, "cool") == 0) {
             command.mode = THERMOSTAT_COOL;
-        } else if (strcmp(mode, "AUTO") == 0) {
+        } else if (strcmp(mode, "AUTO") == 0 ||
+                   strcmp(mode, "heat_cool") == 0) {
             command.mode = THERMOSTAT_AUTO;
-        } else if (strcmp(mode, "FAN") == 0) {
+        } else if (strcmp(mode, "FAN") == 0 ||
+                   strcmp(mode, "fan_only") == 0) {
             command.mode = THERMOSTAT_FAN;
         } else {
             ESP_LOGW(TAG, "Ignoring invalid mode payload");
@@ -87,6 +107,48 @@ static void handle_command(const esp_mqtt_event_t *event)
     if (app_post_event(&command) != ESP_OK) {
         ESP_LOGW(TAG, "Dropping MQTT command because event queue is full");
     }
+}
+
+static void publish_topic(const char *topic, const char *payload)
+{
+    if (!connected) {
+        return;
+    }
+    int message_id = esp_mqtt_client_publish(
+        client, topic, payload, 0, 1, 1);
+    if (message_id < 0) {
+        ESP_LOGW(TAG, "Failed to publish MQTT topic %s", topic);
+    }
+}
+
+static void publish_discovery(void)
+{
+    char topic[128];
+    char payload[1024];
+    snprintf(topic, sizeof(topic), "%s/climate/%s/config",
+             MQTT_DISCOVERY_PREFIX, MQTT_CLIENT_ID);
+    snprintf(payload, sizeof(payload),
+             "{\"name\":\"Thermostat\","
+             "\"unique_id\":\"%s_climate\","
+             "\"device\":{\"identifiers\":[\"%s\"],"
+             "\"name\":\"ESP32 Thermostat\","
+             "\"manufacturer\":\"ESP32\","
+             "\"model\":\"DIY Thermostat\"},"
+             "\"availability_topic\":\"%s/availability\","
+             "\"mode_state_topic\":\"%s/mode\","
+             "\"mode_command_topic\":\"%s/mode/set\","
+             "\"temperature_state_topic\":\"%s/temperature/target\","
+             "\"temperature_command_topic\":\"%s/temperature/target/set\","
+             "\"current_temperature_topic\":\"%s/temperature/current\","
+             "\"modes\":[\"off\",\"heat\",\"cool\",\"heat_cool\",\"fan_only\"],"
+             "\"min_temp\":50,\"max_temp\":95,\"temp_step\":0.5,"
+             "\"temperature_unit\":\"F\",\"payload_available\":\"online\","
+             "\"payload_not_available\":\"offline\","
+             "\"qos\":1,\"retain\":true}",
+             MQTT_CLIENT_ID, MQTT_CLIENT_ID, MQTT_BASE_TOPIC,
+             MQTT_BASE_TOPIC, MQTT_BASE_TOPIC, MQTT_BASE_TOPIC,
+             MQTT_BASE_TOPIC, MQTT_BASE_TOPIC);
+    publish_topic(topic, payload);
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
@@ -105,6 +167,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         snprintf(mode_topic, sizeof(mode_topic), "%s/mode/set", MQTT_BASE_TOPIC);
         esp_mqtt_client_subscribe(client, target_topic, 1);
         esp_mqtt_client_subscribe(client, mode_topic, 1);
+        publish_topic(MQTT_BASE_TOPIC "/availability", "online");
+        publish_discovery();
         ESP_LOGI(TAG, "Connected to MQTT broker");
     } else if (event_id == MQTT_EVENT_DISCONNECTED) {
         connected = false;
@@ -123,6 +187,13 @@ esp_err_t mqtt_initialize(void)
 #else
     esp_mqtt_client_config_t config = {
         .broker.address.uri = MQTT_BROKER_URI,
+        .session.last_will = {
+            .topic = MQTT_BASE_TOPIC "/availability",
+            .msg = "offline",
+            .msg_len = 7,
+            .qos = 1,
+            .retain = true,
+        },
         .credentials = {
             .client_id = MQTT_CLIENT_ID,
             .username = MQTT_USERNAME,
@@ -155,16 +226,9 @@ esp_err_t mqtt_initialize(void)
 #ifdef ENABLE_MQTT
 static void publish(const char *suffix, const char *payload)
 {
-    if (!connected) {
-        return;
-    }
     char topic[96];
     snprintf(topic, sizeof(topic), "%s/%s", MQTT_BASE_TOPIC, suffix);
-    int message_id = esp_mqtt_client_publish(
-        client, topic, payload, 0, 1, 1);
-    if (message_id < 0) {
-        ESP_LOGW(TAG, "Failed to publish MQTT topic %s", topic);
-    }
+    publish_topic(topic, payload);
 }
 #endif
 
@@ -197,7 +261,7 @@ void mqtt_publish_target_temperature(float setpoint)
 void mqtt_publish_mode(thermostat_mode_t mode)
 {
 #ifdef ENABLE_MQTT
-    publish("mode", thermostat_mode_name(mode));
+    publish("mode", ha_mode_name(mode));
 #else
     (void)mode;
 #endif

@@ -136,6 +136,7 @@ static void apply_joystick_event(const app_event_t *event,
                                  TickType_t *last_control_action,
                                  bool have_reading,
                                  const dht11_reading_t *last_reading,
+                                 bool show_ip,
                                  thermostat_relay_t *heating_relay,
                                  thermostat_relay_t *cooling_relay,
                                  thermostat_relay_t *fan_relay)
@@ -166,7 +167,7 @@ static void apply_joystick_event(const app_event_t *event,
             thermostat_set_relays(*mode, last_reading->temperature, *setpoint,
                                   now, heating_relay, cooling_relay,
                                   fan_relay);
-            thermostat_show_reading(last_reading, *setpoint, *mode);
+            thermostat_show_reading(last_reading, *setpoint, *mode, show_ip);
         }
     }
 
@@ -186,6 +187,9 @@ static void thermostat_task(void *arg)
     TickType_t last_control_action = 0;
     TickType_t last_sensor_reading = 0;
     TickType_t last_success_log = 0;
+    TickType_t next_display_switch =
+        xTaskGetTickCount() + pdMS_TO_TICKS(2000);
+    bool show_ip = false;
     bool sensor_timeout_reported = false;
     thermostat_relay_t heating_relay = {0};
     thermostat_relay_t cooling_relay = {0};
@@ -216,6 +220,14 @@ static void thermostat_task(void *arg)
             }
         }
 
+        if (DEBUG_SHOW_IP && now >= next_display_switch) {
+            show_ip = !show_ip;
+            next_display_switch = now + pdMS_TO_TICKS(2000);
+            if (have_reading) {
+                thermostat_show_reading(&last_reading, setpoint, mode, show_ip);
+            }
+        }
+
         if (!received) {
             continue;
         }
@@ -225,6 +237,7 @@ static void thermostat_task(void *arg)
                 &event, now, &mode, &setpoint,
                 &last_horizontal_direction, &last_vertical_direction,
                 &last_control_action, have_reading, &last_reading,
+                show_ip,
                 &heating_relay, &cooling_relay, &fan_relay);
         } else if (event.type == APP_EVENT_SENSOR_READING) {
             if (!DEBUG_BYPASS_SENSOR_VALIDATION &&
@@ -248,7 +261,7 @@ static void thermostat_task(void *arg)
             mqtt_publish_temperature(&last_reading);
             thermostat_set_relays(mode, last_reading.temperature, setpoint, now,
                                   &heating_relay, &cooling_relay, &fan_relay);
-            thermostat_show_reading(&last_reading, setpoint, mode);
+            thermostat_show_reading(&last_reading, setpoint, mode, show_ip);
             if (now - last_success_log >= pdMS_TO_TICKS(30000)) {
                 ESP_LOGI(TAG, "DHT11 temperature: %.1f C, humidity: %.1f%%",
                          last_reading.temperature, last_reading.humidity);
@@ -262,7 +275,8 @@ static void thermostat_task(void *arg)
                     thermostat_set_relays(
                         mode, last_reading.temperature, setpoint, now,
                         &heating_relay, &cooling_relay, &fan_relay);
-                    thermostat_show_reading(&last_reading, setpoint, mode);
+                    thermostat_show_reading(
+                        &last_reading, setpoint, mode, show_ip);
                 }
                 mqtt_publish_mode(mode);
             } else {
@@ -278,7 +292,8 @@ static void thermostat_task(void *arg)
                     thermostat_set_relays(
                         mode, last_reading.temperature, setpoint, now,
                         &heating_relay, &cooling_relay, &fan_relay);
-                    thermostat_show_reading(&last_reading, setpoint, mode);
+                    thermostat_show_reading(
+                        &last_reading, setpoint, mode, show_ip);
                 }
                 mqtt_publish_target_temperature(setpoint);
             } else {

@@ -7,6 +7,7 @@
 #include "Configuration.h"
 #include "lcd.h"
 #include "hardware_config.h"
+#include "wifi.h"
 
 static const char *const TAG = "thermostat";
 static const TickType_t compressor_minimum_on_time =
@@ -196,10 +197,20 @@ void thermostat_disable_relays(thermostat_relay_t *heating_relay,
 
 void thermostat_show_reading(const dht11_reading_t *reading,
                              float setpoint,
-                             thermostat_mode_t mode)
+                             thermostat_mode_t mode,
+                             bool show_ip)
 {
     float temperature = reading->temperature * 9.0f / 5.0f + 32.0f;
-    lcd_printf_line(0, "Now %4.1fF", temperature);
+    if (show_ip) {
+        char ip_address[16];
+        if (wifi_get_ip_address(ip_address, sizeof(ip_address))) {
+            lcd_write_line(0, ip_address);
+        } else {
+            lcd_write_line(0, "Offline");
+        }
+    } else {
+        lcd_printf_line(0, "Now %4.1fF", temperature);
+    }
     lcd_printf_line(1, "Set %4.1fF %-4s", setpoint,
                     thermostat_mode_name(mode));
 }

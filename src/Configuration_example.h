@@ -45,5 +45,6 @@
 #define MQTT_PASSWORD ""
 #define MQTT_CLIENT_ID "esp32-thermostat"
 #define MQTT_BASE_TOPIC "thermostat"
+#define MQTT_DISCOVERY_PREFIX "homeassistant"
 
 #endif

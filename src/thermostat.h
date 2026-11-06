@@ -37,5 +37,6 @@ void thermostat_disable_relays(thermostat_relay_t *heating_relay,
                                thermostat_relay_t *fan_relay);
 void thermostat_show_reading(const dht11_reading_t *reading,
                              float setpoint,
-                             thermostat_mode_t mode);
+                             thermostat_mode_t mode,
+                             bool show_ip);
 void thermostat_show_loading(uint8_t frame);

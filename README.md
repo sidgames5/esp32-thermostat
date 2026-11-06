@@ -38,10 +38,13 @@ reading is logged as `DHT11 reading recovered`.
 
 MQTT is supported when `ENABLE_MQTT` is defined in
 [`src/Configuration.h`](src/Configuration.h). Configure the broker URI,
-optional credentials, client ID, and base topic there. The firmware publishes
-retained state to `<base>/temperature/current`, `<base>/temperature/target`,
-and `<base>/mode`, and accepts commands on
-`<base>/temperature/target/set` (degrees Fahrenheit) and `<base>/mode/set`
-(`OFF`, `HEAT`, `COOL`, `AUTO`, or `FAN`).
+optional credentials, client ID, base topic, and Home Assistant discovery
+prefix there. On connection it publishes a retained MQTT Climate discovery
+entity under `<discovery-prefix>/climate/<client-id>/config`. The firmware
+publishes retained state to `<base>/temperature/current`,
+`<base>/temperature/target`, and `<base>/mode`, and accepts commands on
+`<base>/temperature/target/set` and `<base>/mode/set`. Home Assistant uses
+`off`, `heat`, `cool`, `heat_cool`, and `fan_only`; the legacy `OFF`, `HEAT`,
+`COOL`, `AUTO`, and `FAN` values remain accepted.
 
 Protocols to be supported in the future: Matter/IP, BACnet/IP, Zigbee (on supported ESP32 models), Matter/Thread (on supported ESP32 models)
