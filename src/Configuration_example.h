@@ -8,6 +8,8 @@
 // |     Wi-Fi     |
 // | ~~~~~~~~~~~~~ |
 
+// Properly configured Wi-Fi is mandatory for MQTT to work
+
 #define ENABLE_WIFI
 
 #ifdef ENABLE_WIFI

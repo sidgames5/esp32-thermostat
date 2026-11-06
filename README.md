@@ -2,6 +2,13 @@
 
 Fully functional smart thermostat using only commonly available components.
 
+## Quick Start
+
+1. Assemble the components on the breadboard according to the instructions (TBD).
+2. Clone this repository.
+3. Rename `src/Configuration_example.h` to `src/Configuration.h` and fill out all the fields to fit your setup.
+
+
 ## Hardware
 
 The design should work with any ESP32 that has 14 free GPIO pins and supports ESP-IDF.

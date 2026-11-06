@@ -5,13 +5,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "mqtt_client.h"
 #include "esp_log.h"
 
 #include "Configuration.h"
 #include "app_events.h"
 
 static const char *const TAG = "mqtt";
+#ifdef ENABLE_MQTT
+#include "mqtt_client.h"
+
 static esp_mqtt_client_handle_t client;
 static bool connected;
 
@@ -111,6 +113,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         handle_command(event);
     }
 }
+#endif
 
 esp_err_t mqtt_initialize(void)
 {
@@ -149,6 +152,7 @@ esp_err_t mqtt_initialize(void)
 #endif
 }
 
+#ifdef ENABLE_MQTT
 static void publish(const char *suffix, const char *payload)
 {
     if (!connected) {
@@ -162,6 +166,7 @@ static void publish(const char *suffix, const char *payload)
         ESP_LOGW(TAG, "Failed to publish MQTT topic %s", topic);
     }
 }
+#endif
 
 void mqtt_publish_temperature(const dht11_reading_t *reading)
 {
