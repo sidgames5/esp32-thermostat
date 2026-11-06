@@ -16,6 +16,7 @@ typedef struct {
         struct {
             int x_raw;
             int y_raw;
+            bool button_pressed;
         } joystick;
         dht11_reading_t sensor_reading;
         thermostat_mode_t mode;

@@ -45,9 +45,11 @@ publishes retained state to `<base>/temperature/current`,
 `<base>/temperature/low`, `<base>/temperature/high`, and `<base>/mode`, and
 accepts commands on `<base>/temperature/low/set`,
 `<base>/temperature/high/set`, and `<base>/mode/set`. The low and high
-temperatures are the heating and cooling bounds. The joystick moves left or
-right to select a bound and up or down to adjust it; the LCD displays the
-selected bound. Home Assistant uses `off`, `heat_cool`, and `fan_only`;
+temperatures are the heating and cooling bounds. The joystick moves up or down
+to adjust the selected bound, left or right to cycle through thermostat modes,
+and clicking selects the lower or upper bound. The LCD marks the selected
+bound with `*`. The joystick click switch is connected to GPIO 34.
+Home Assistant uses `off`, `heat_cool`, and `fan_only`;
 legacy heat and cool commands are treated as auto.
 
 Protocols to be supported in the future: Matter/IP, BACnet/IP, Zigbee (on supported ESP32 models), Matter/Thread (on supported ESP32 models)

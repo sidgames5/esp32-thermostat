@@ -39,5 +39,7 @@ void thermostat_show_reading(const dht11_reading_t *reading,
                              float upper_setpoint,
                              bool editing_upper_setpoint,
                              thermostat_mode_t mode,
+                             bool heating_active,
+                             bool cooling_active,
                              bool show_ip);
 void thermostat_show_loading(uint8_t frame);

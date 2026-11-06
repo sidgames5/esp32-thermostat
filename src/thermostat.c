@@ -105,7 +105,7 @@ void thermostat_set_relays(thermostat_mode_t mode,
                            thermostat_relay_t *cooling_relay,
                            thermostat_relay_t *fan_relay)
 {
-    const float hysteresis = 1.0f;
+    const float hysteresis = 0.0f;
     if (mode < THERMOSTAT_OFF || mode > THERMOSTAT_FAN ||
         (!DEBUG_BYPASS_SENSOR_VALIDATION &&
          (!isfinite(temperature_celsius) ||
@@ -209,9 +209,10 @@ void thermostat_show_reading(const dht11_reading_t *reading,
                              float upper_setpoint,
                              bool editing_upper_setpoint,
                              thermostat_mode_t mode,
+                             bool heating_active,
+                             bool cooling_active,
                              bool show_ip)
 {
-    float setpoint = editing_upper_setpoint ? upper_setpoint : lower_setpoint;
     float temperature = reading->temperature * 9.0f / 5.0f + 32.0f;
     if (show_ip) {
         char ip_address[16];
@@ -221,11 +222,20 @@ void thermostat_show_reading(const dht11_reading_t *reading,
             lcd_write_line(0, "Offline");
         }
     } else {
-        lcd_printf_line(0, "Now %4.1fF", temperature);
+        const char *display_mode = thermostat_mode_name(mode);
+        if (mode == THERMOSTAT_AUTO) {
+            if (heating_active) {
+                display_mode = "HEATING";
+            } else if (cooling_active) {
+                display_mode = "COOLING";
+            }
+        }
+        lcd_printf_line(0, "T: %4.1fF %-4s", temperature,
+                        display_mode);
     }
-    lcd_printf_line(1, "Set%c%4.1fF %-4s",
-                    editing_upper_setpoint ? 'H' : 'L', setpoint,
-                    thermostat_mode_name(mode));
+    lcd_printf_line(1, "%cL:%4.1f %cH:%4.1f",
+                    editing_upper_setpoint ? ' ' : '*', lower_setpoint,
+                    editing_upper_setpoint ? '*' : ' ', upper_setpoint);
 }
 
 void thermostat_show_loading(uint8_t frame)

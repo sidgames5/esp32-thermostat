@@ -4,6 +4,7 @@
 
 #define PIN_JOYSTICK_X 39
 #define PIN_JOYSTICK_Y 36
+#define PIN_JOYSTICK_BUTTON 34
 
 #define PIN_DISPLAY_RS 23
 #define PIN_DISPLAY_E 22

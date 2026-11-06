@@ -61,6 +61,11 @@ static void joystick_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
+    if (joystick_button_initialize(PIN_JOYSTICK_BUTTON) != ESP_OK) {
+        ESP_LOGE(TAG, "Joystick task stopped because button initialization failed");
+        vTaskDelete(NULL);
+        return;
+    }
 
     for (;;) {
         app_event_t event = {.type = APP_EVENT_JOYSTICK};
@@ -68,6 +73,8 @@ static void joystick_task(void *arg)
             adc_handle, ADC_CHANNEL_3, &event.joystick.x_raw);
         esp_err_t y_result = adc_oneshot_read(
             adc_handle, ADC_CHANNEL_0, &event.joystick.y_raw);
+        event.joystick.button_pressed =
+            joystick_button_is_pressed(PIN_JOYSTICK_BUTTON);
 
         if (x_result != ESP_OK || y_result != ESP_OK) {
             TickType_t now = xTaskGetTickCount();
@@ -130,6 +137,7 @@ static void apply_joystick_event(const app_event_t *event,
                                  bool *editing_upper_setpoint,
                                  int *last_horizontal_direction,
                                  int *last_vertical_direction,
+                                 bool *last_button_pressed,
                                  TickType_t *last_control_action,
                                  bool have_reading,
                                  const dht11_reading_t *last_reading,
@@ -143,6 +151,8 @@ static void apply_joystick_event(const app_event_t *event,
         joystick_normalize(event->joystick.x_raw));
     int vertical_direction = joystick_direction(
         joystick_normalize(event->joystick.y_raw));
+    bool button_clicked =
+        event->joystick.button_pressed && !*last_button_pressed;
     bool new_horizontal_direction =
         horizontal_direction != 0 &&
         horizontal_direction != *last_horizontal_direction;
@@ -151,10 +161,10 @@ static void apply_joystick_event(const app_event_t *event,
         vertical_direction != *last_vertical_direction;
 
     if (now - *last_control_action >= control_cooldown &&
-        (new_horizontal_direction || new_vertical_direction)) {
+        (button_clicked || new_horizontal_direction || new_vertical_direction)) {
         bool setpoint_changed = false;
-        if (new_horizontal_direction) {
-            *editing_upper_setpoint = horizontal_direction > 0;
+        if (button_clicked) {
+            *editing_upper_setpoint = !*editing_upper_setpoint;
         }
         if (new_vertical_direction) {
             float *selected_setpoint = *editing_upper_setpoint
@@ -162,6 +172,16 @@ static void apply_joystick_event(const app_event_t *event,
                                             : lower_setpoint;
             setpoint_changed = adjust_setpoint(selected_setpoint,
                                                vertical_direction);
+        }
+        if (new_horizontal_direction) {
+            int next_mode = (int)*mode + horizontal_direction;
+            if (next_mode < THERMOSTAT_OFF) {
+                next_mode = THERMOSTAT_FAN;
+            } else if (next_mode > THERMOSTAT_FAN) {
+                next_mode = THERMOSTAT_OFF;
+            }
+            *mode = (thermostat_mode_t)next_mode;
+            mqtt_publish_mode(*mode);
         }
         *last_control_action = now;
 
@@ -175,12 +195,14 @@ static void apply_joystick_event(const app_event_t *event,
                                   fan_relay);
             thermostat_show_reading(last_reading, *lower_setpoint,
                                     *upper_setpoint, *editing_upper_setpoint,
-                                    *mode, show_ip);
+                                    *mode, heating_relay->active,
+                                    cooling_relay->active, show_ip);
         }
     }
 
     *last_horizontal_direction = horizontal_direction;
     *last_vertical_direction = vertical_direction;
+    *last_button_pressed = event->joystick.button_pressed;
 }
 
 static void thermostat_task(void *arg)
@@ -194,6 +216,7 @@ static void thermostat_task(void *arg)
     bool have_reading = false;
     int last_horizontal_direction = 0;
     int last_vertical_direction = 0;
+    bool last_button_pressed = false;
     TickType_t last_control_action = 0;
     TickType_t last_sensor_reading = 0;
     TickType_t last_success_log = 0;
@@ -238,7 +261,8 @@ static void thermostat_task(void *arg)
             if (have_reading) {
                 thermostat_show_reading(&last_reading, lower_setpoint,
                                         upper_setpoint, editing_upper_setpoint,
-                                        mode, show_ip);
+                                        mode, heating_relay.active,
+                                        cooling_relay.active, show_ip);
             }
         }
 
@@ -251,6 +275,7 @@ static void thermostat_task(void *arg)
                 &event, now, &mode, &lower_setpoint, &upper_setpoint,
                 &editing_upper_setpoint,
                 &last_horizontal_direction, &last_vertical_direction,
+                &last_button_pressed,
                 &last_control_action, have_reading, &last_reading,
                 show_ip,
                 &heating_relay, &cooling_relay, &fan_relay);
@@ -279,7 +304,8 @@ static void thermostat_task(void *arg)
                                   &heating_relay, &cooling_relay, &fan_relay);
             thermostat_show_reading(&last_reading, lower_setpoint,
                                     upper_setpoint, editing_upper_setpoint,
-                                    mode, show_ip);
+                                    mode, heating_relay.active,
+                                    cooling_relay.active, show_ip);
             if (now - last_success_log >= pdMS_TO_TICKS(30000)) {
                 ESP_LOGI(TAG, "DHT11 temperature: %.1f C, humidity: %.1f%%",
                          last_reading.temperature, last_reading.humidity);
@@ -296,7 +322,8 @@ static void thermostat_task(void *arg)
                         &heating_relay, &cooling_relay, &fan_relay);
                     thermostat_show_reading(
                         &last_reading, lower_setpoint, upper_setpoint,
-                        editing_upper_setpoint, mode, show_ip);
+                        editing_upper_setpoint, mode, heating_relay.active,
+                        cooling_relay.active, show_ip);
                 }
                 mqtt_publish_mode(mode);
             } else {
@@ -327,7 +354,8 @@ static void thermostat_task(void *arg)
                         &heating_relay, &cooling_relay, &fan_relay);
                     thermostat_show_reading(
                         &last_reading, lower_setpoint, upper_setpoint,
-                        editing_upper_setpoint, mode, show_ip);
+                        editing_upper_setpoint, mode, heating_relay.active,
+                        cooling_relay.active, show_ip);
                 }
                 mqtt_publish_target_temperature(lower_setpoint, upper_setpoint);
             } else {
