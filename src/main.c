@@ -155,14 +155,24 @@ static void apply_joystick_event(const app_event_t *event,
 
     if (now - *last_control_action >= control_cooldown &&
         (new_horizontal_direction || new_vertical_direction)) {
+        bool mode_changed = false;
+        bool setpoint_changed = false;
         if (new_horizontal_direction) {
             *mode = next_mode(*mode, horizontal_direction);
+            mode_changed = true;
         }
         if (new_vertical_direction) {
             *setpoint = next_setpoint(*setpoint, vertical_direction);
+            setpoint_changed = true;
         }
         *last_control_action = now;
 
+        if (mode_changed) {
+            mqtt_publish_mode(*mode);
+        }
+        if (setpoint_changed) {
+            mqtt_publish_target_temperature(*setpoint);
+        }
         if (have_reading) {
             thermostat_set_relays(*mode, last_reading->temperature, *setpoint,
                                   now, heating_relay, cooling_relay,
@@ -202,6 +212,8 @@ static void thermostat_task(void *arg)
     }
 
     thermostat_show_loading(0);
+    mqtt_publish_mode(mode);
+    mqtt_publish_target_temperature(setpoint);
 
     for (;;) {
         app_event_t event;

@@ -16,6 +16,14 @@ static const char *const TAG = "mqtt";
 
 static esp_mqtt_client_handle_t client;
 static bool connected;
+static bool target_temperature_available;
+static float last_target_temperature;
+static bool mode_available;
+static thermostat_mode_t last_mode;
+
+#ifdef ENABLE_MQTT
+static void publish(const char *suffix, const char *payload);
+#endif
 
 static const char *ha_mode_name(thermostat_mode_t mode)
 {
@@ -169,6 +177,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         esp_mqtt_client_subscribe(client, mode_topic, 1);
         publish_topic(MQTT_BASE_TOPIC "/availability", "online");
         publish_discovery();
+        if (target_temperature_available) {
+            char payload[16];
+            snprintf(payload, sizeof(payload), "%.1f",
+                     last_target_temperature);
+            publish("temperature/target", payload);
+        }
+        if (mode_available) {
+            publish("mode", ha_mode_name(last_mode));
+        }
         ESP_LOGI(TAG, "Connected to MQTT broker");
     } else if (event_id == MQTT_EVENT_DISCONNECTED) {
         connected = false;
@@ -250,6 +267,8 @@ void mqtt_publish_temperature(const dht11_reading_t *reading)
 void mqtt_publish_target_temperature(float setpoint)
 {
 #ifdef ENABLE_MQTT
+    last_target_temperature = setpoint;
+    target_temperature_available = true;
     char payload[16];
     snprintf(payload, sizeof(payload), "%.1f", setpoint);
     publish("temperature/target", payload);
@@ -261,6 +280,8 @@ void mqtt_publish_target_temperature(float setpoint)
 void mqtt_publish_mode(thermostat_mode_t mode)
 {
 #ifdef ENABLE_MQTT
+    last_mode = mode;
+    mode_available = true;
     publish("mode", ha_mode_name(mode));
 #else
     (void)mode;
