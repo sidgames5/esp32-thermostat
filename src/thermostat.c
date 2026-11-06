@@ -130,6 +130,17 @@ void thermostat_set_relays(thermostat_mode_t mode,
         return;
     }
 
+    if (mode == THERMOSTAT_FAN) {
+        if (heating_relay->active) {
+            account_relay_usage(heating_relay, now);
+            force_relay_off(PIN_RELAY_HEAT, heating_relay, now);
+        }
+        if (cooling_relay->active) {
+            account_relay_usage(cooling_relay, now);
+            force_relay_off(PIN_RELAY_COOL, cooling_relay, now);
+        }
+    }
+
     bool heating = false;
     bool cooling = false;
 
