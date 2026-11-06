@@ -10,6 +10,7 @@
 #include "joystick.h"
 #include "lcd.h"
 #include "thermostat.h"
+#include "wifi.h"
 
 static const char *const TAG = "thermostat";
 static QueueHandle_t app_event_queue;
@@ -228,6 +229,9 @@ static void thermostat_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Starting thermostat tasks");
+    if (wifi_initialize() != ESP_OK) {
+        ESP_LOGE(TAG, "Wi-Fi initialization failed");
+    }
     hardware_initialize_gpio();
     lcd_initialize();
 
