@@ -9,6 +9,7 @@
 #include "hardware.h"
 #include "joystick.h"
 #include "lcd.h"
+#include "mqtt.h"
 #include "thermostat.h"
 #include "wifi.h"
 
@@ -190,6 +191,7 @@ static void thermostat_task(void *arg)
         } else if (event.type == APP_EVENT_SENSOR_READING) {
             last_reading = event.sensor_reading;
             have_reading = true;
+            mqtt_publish_temperature(&last_reading);
             thermostat_set_relays(mode, last_reading.temperature, setpoint, now,
                                   &heating_relay, &cooling_relay, &fan_relay);
             thermostat_show_reading(&last_reading, setpoint, mode);
@@ -205,6 +207,7 @@ static void thermostat_task(void *arg)
                         &heating_relay, &cooling_relay, &fan_relay);
                     thermostat_show_reading(&last_reading, setpoint, mode);
                 }
+                mqtt_publish_mode(mode);
             } else {
                 ESP_LOGW(TAG, "Ignoring invalid thermostat mode: %d",
                          event.mode);
@@ -218,6 +221,7 @@ static void thermostat_task(void *arg)
                         &heating_relay, &cooling_relay, &fan_relay);
                     thermostat_show_reading(&last_reading, setpoint, mode);
                 }
+                mqtt_publish_target_temperature(setpoint);
             } else {
                 ESP_LOGW(TAG, "Ignoring invalid thermostat setpoint: %.1f",
                          event.setpoint);
@@ -240,6 +244,10 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to create application event queue");
         lcd_show("Queue init failed", "");
         return;
+    }
+
+    if (mqtt_initialize() != ESP_OK) {
+        ESP_LOGW(TAG, "MQTT initialization failed; continuing without MQTT");
     }
 
     if (xTaskCreate(joystick_task, "joystick", 3072, NULL, 5, NULL) !=

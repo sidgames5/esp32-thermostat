@@ -6,3 +6,15 @@
 #define WIFI_PASSWORD "your-wifi-password"
 
 #endif
+
+#define ENABLE_MQTT
+
+#ifdef ENABLE_MQTT
+
+#define MQTT_BROKER_URI "mqtt://your-mqtt-server"
+#define MQTT_USERNAME ""
+#define MQTT_PASSWORD ""
+#define MQTT_CLIENT_ID "esp32-thermostat"
+#define MQTT_BASE_TOPIC "thermostat"
+
+#endif
