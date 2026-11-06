@@ -27,6 +27,11 @@ relay and LCD state. Wi-Fi, MQTT, Zigbee, or other connectivity tasks can
 publish control events through the same queue without adding more polling logic
 to the thermostat task. Wi-Fi and MQTT use this integration today.
 
+If the LCD remains on `Waiting for data`, check that the DHT11 data line is
+connected to GPIO 32 and has a pull-up resistor. The firmware retries failed
+sensor reads and rate-limits the corresponding serial warning; a successful
+reading is logged as `DHT11 reading recovered`.
+
 **IMPORTANT**: Rename `src/Configuration_example.h` to `src/Configuration.h` and fill out all the fields in there before building
 
 ## Building Automation

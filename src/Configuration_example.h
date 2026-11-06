@@ -4,6 +4,19 @@
 // |                         |
 // | ~~~~~~~~~~~~~~~~~~~~~~~ |
 
+// | ~~~~~~~~~~~~~~~~~~~~~~~ |
+// |   DEBUG SAFETY BYPASSES |
+// | ~~~~~~~~~~~~~~~~~~~~~~~ |
+//
+// Bench debugging only. Keep all values at 0 for normal operation. Enabling
+// these can damage your air handler and possibly void your home warranty.
+
+#define DEBUG_BYPASS_SENSOR_VALIDATION 0
+#define DEBUG_BYPASS_SENSOR_TIMEOUT 0
+#define DEBUG_BYPASS_TEMPERATURE_CUTOFF 0
+#define DEBUG_BYPASS_RELAY_TIMING 0
+#define DEBUG_BYPASS_RELAY_RUNTIME_LIMITS 0
+
 // | ~~~~~~~~~~~~~ |
 // |     Wi-Fi     |
 // | ~~~~~~~~~~~~~ |

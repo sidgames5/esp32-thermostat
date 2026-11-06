@@ -4,6 +4,7 @@
 
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "Configuration.h"
 #include "lcd.h"
 #include "hardware_config.h"
 
@@ -44,6 +45,7 @@ static void force_relay_off(int pin, thermostat_relay_t *relay, TickType_t now)
     relay->active = false;
     relay->last_transition = now;
     relay->on_since = 0;
+    relay->transition_initialized = true;
     gpio_set_level(pin, 0);
 }
 
@@ -54,7 +56,7 @@ static void update_relay(int pin,
                          thermostat_relay_t *relay)
 {
     account_relay_usage(relay, now);
-    if (relay->active &&
+    if (!DEBUG_BYPASS_RELAY_RUNTIME_LIMITS && relay->active &&
         (now - relay->on_since >=
              pdMS_TO_TICKS(THERMOSTAT_MAX_CONTINUOUS_RUNTIME_MS) ||
          relay->on_time_in_window >= pdMS_TO_TICKS(THERMOSTAT_MAX_DUTY_MS))) {
@@ -62,17 +64,21 @@ static void update_relay(int pin,
         force_relay_off(pin, relay, now);
         requested = false;
     }
-    if (relay->on_time_in_window >= pdMS_TO_TICKS(THERMOSTAT_MAX_DUTY_MS)) {
+    if (!DEBUG_BYPASS_RELAY_RUNTIME_LIMITS &&
+        relay->on_time_in_window >= pdMS_TO_TICKS(THERMOSTAT_MAX_DUTY_MS)) {
         requested = false;
     }
+
     if (requested == relay->active ||
-        now - relay->last_transition < minimum_time) {
+        (!DEBUG_BYPASS_RELAY_TIMING && relay->transition_initialized &&
+         now - relay->last_transition < minimum_time)) {
         return;
     }
 
     relay->active = requested;
     relay->last_transition = now;
     relay->on_since = requested ? now : 0;
+    relay->transition_initialized = true;
     gpio_set_level(pin, relay->active);
 }
 
@@ -86,9 +92,11 @@ void thermostat_set_relays(thermostat_mode_t mode,
 {
     const float hysteresis = 1.0f;
     if (mode < THERMOSTAT_OFF || mode > THERMOSTAT_FAN ||
-        !isfinite(temperature_celsius) || !isfinite(setpoint) ||
-        temperature_celsius < THERMOSTAT_MIN_VALID_TEMP_C ||
-        temperature_celsius > THERMOSTAT_MAX_VALID_TEMP_C ||
+        (!DEBUG_BYPASS_SENSOR_VALIDATION &&
+         (!isfinite(temperature_celsius) ||
+          temperature_celsius < THERMOSTAT_MIN_VALID_TEMP_C ||
+          temperature_celsius > THERMOSTAT_MAX_VALID_TEMP_C)) ||
+        !isfinite(setpoint) ||
         setpoint < THERMOSTAT_MIN_SETPOINT_F ||
         setpoint > THERMOSTAT_MAX_SETPOINT_F) {
         ESP_LOGE(TAG, "Invalid control state; disabling all relays");
@@ -97,7 +105,8 @@ void thermostat_set_relays(thermostat_mode_t mode,
     }
 
     float temperature = temperature_celsius * 9.0f / 5.0f + 32.0f;
-    if (temperature >= THERMOSTAT_MAX_SAFE_TEMP_F) {
+    if (!DEBUG_BYPASS_TEMPERATURE_CUTOFF &&
+        temperature >= THERMOSTAT_MAX_SAFE_TEMP_F) {
         ESP_LOGE(TAG, "Over-temperature cutoff at %.1f F", temperature);
         thermostat_disable_relays(heating_relay, cooling_relay, fan_relay);
         return;

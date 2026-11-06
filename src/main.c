@@ -12,6 +12,7 @@
 #include "lcd.h"
 #include "mqtt.h"
 #include "thermostat.h"
+#include "Configuration.h"
 #include "hardware_config.h"
 #include "wifi.h"
 
@@ -57,6 +58,8 @@ static float next_setpoint(float setpoint, int direction)
 static void joystick_task(void *arg)
 {
     (void)arg;
+    TickType_t last_adc_failure_log = 0;
+    bool adc_failure_reported = false;
     adc_oneshot_unit_handle_t adc_handle;
     if (joystick_initialize(&adc_handle) != ESP_OK) {
         ESP_LOGE(TAG, "Joystick task stopped because ADC initialization failed");
@@ -72,10 +75,18 @@ static void joystick_task(void *arg)
             adc_handle, ADC_CHANNEL_0, &event.joystick.y_raw);
 
         if (x_result != ESP_OK || y_result != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read joystick: X=%s Y=%s",
-                     esp_err_to_name(x_result), esp_err_to_name(y_result));
+            TickType_t now = xTaskGetTickCount();
+            if (!adc_failure_reported ||
+                now - last_adc_failure_log >= pdMS_TO_TICKS(30000)) {
+                ESP_LOGW(TAG, "Joystick read failed: X=%s Y=%s; retrying",
+                         esp_err_to_name(x_result), esp_err_to_name(y_result));
+                adc_failure_reported = true;
+                last_adc_failure_log = now;
+            }
         } else if (app_post_event(&event) != ESP_OK) {
             ESP_LOGW(TAG, "Dropping joystick event because event queue is full");
+        } else {
+            adc_failure_reported = false;
         }
 
         vTaskDelay(pdMS_TO_TICKS(250));
@@ -86,6 +97,8 @@ static void sensor_task(void *arg)
 {
     (void)arg;
     TickType_t next_read = xTaskGetTickCount() + pdMS_TO_TICKS(2000);
+    TickType_t last_failure_log = 0;
+    bool sensor_failure_reported = false;
 
     for (;;) {
         vTaskDelayUntil(&next_read, pdMS_TO_TICKS(2000));
@@ -93,10 +106,21 @@ static void sensor_task(void *arg)
         app_event_t event = {.type = APP_EVENT_SENSOR_READING};
         esp_err_t result = dht11_read(&event.sensor_reading);
         if (result != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read DHT11: %s", esp_err_to_name(result));
+            TickType_t now = xTaskGetTickCount();
+            if (!sensor_failure_reported ||
+                now - last_failure_log >= pdMS_TO_TICKS(30000)) {
+                ESP_LOGW(TAG, "DHT11 read failed: %s; retrying",
+                         esp_err_to_name(result));
+                sensor_failure_reported = true;
+                last_failure_log = now;
+            }
             continue;
         }
 
+        if (sensor_failure_reported) {
+            ESP_LOGI(TAG, "DHT11 reading recovered");
+            sensor_failure_reported = false;
+        }
         if (app_post_event(&event) != ESP_OK) {
             ESP_LOGW(TAG, "Dropping sensor event because event queue is full");
         }
@@ -160,13 +184,18 @@ static void thermostat_task(void *arg)
     int last_horizontal_direction = 0;
     int last_vertical_direction = 0;
     TickType_t last_control_action = 0;
-    TickType_t last_loading_update = 0;
     TickType_t last_sensor_reading = 0;
-    uint8_t loading_frame = 0;
+    TickType_t last_success_log = 0;
     bool sensor_timeout_reported = false;
     thermostat_relay_t heating_relay = {0};
     thermostat_relay_t cooling_relay = {0};
     thermostat_relay_t fan_relay = {0};
+
+    if (DEBUG_BYPASS_SENSOR_VALIDATION || DEBUG_BYPASS_SENSOR_TIMEOUT ||
+        DEBUG_BYPASS_TEMPERATURE_CUTOFF || DEBUG_BYPASS_RELAY_TIMING ||
+        DEBUG_BYPASS_RELAY_RUNTIME_LIMITS) {
+        ESP_LOGW(TAG, "DEBUG SAFETY BYPASSES ENABLED");
+    }
 
     thermostat_show_loading(0);
 
@@ -176,7 +205,7 @@ static void thermostat_task(void *arg)
             app_event_queue, &event, pdMS_TO_TICKS(100)) == pdTRUE;
         TickType_t now = xTaskGetTickCount();
 
-        if (have_reading &&
+        if (!DEBUG_BYPASS_SENSOR_TIMEOUT && have_reading &&
             now - last_sensor_reading >=
                 pdMS_TO_TICKS(THERMOSTAT_SENSOR_TIMEOUT_MS)) {
             thermostat_disable_relays(
@@ -185,12 +214,6 @@ static void thermostat_task(void *arg)
                 ESP_LOGE(TAG, "Sensor data stale; disabling all relays");
                 sensor_timeout_reported = true;
             }
-        }
-
-        if (!have_reading &&
-            now - last_loading_update >= pdMS_TO_TICKS(500)) {
-            thermostat_show_loading(++loading_frame);
-            last_loading_update = now;
         }
 
         if (!received) {
@@ -204,14 +227,15 @@ static void thermostat_task(void *arg)
                 &last_control_action, have_reading, &last_reading,
                 &heating_relay, &cooling_relay, &fan_relay);
         } else if (event.type == APP_EVENT_SENSOR_READING) {
-            if (!isfinite(event.sensor_reading.temperature) ||
+            if (!DEBUG_BYPASS_SENSOR_VALIDATION &&
+                (!isfinite(event.sensor_reading.temperature) ||
                 !isfinite(event.sensor_reading.humidity) ||
                 event.sensor_reading.temperature <
                     THERMOSTAT_MIN_VALID_TEMP_C ||
                 event.sensor_reading.temperature >
                     THERMOSTAT_MAX_VALID_TEMP_C ||
                 event.sensor_reading.humidity < 0.0f ||
-                event.sensor_reading.humidity > 100.0f) {
+                event.sensor_reading.humidity > 100.0f)) {
                 ESP_LOGE(TAG, "Ignoring invalid sensor reading");
                 thermostat_disable_relays(
                     &heating_relay, &cooling_relay, &fan_relay);
@@ -225,8 +249,11 @@ static void thermostat_task(void *arg)
             thermostat_set_relays(mode, last_reading.temperature, setpoint, now,
                                   &heating_relay, &cooling_relay, &fan_relay);
             thermostat_show_reading(&last_reading, setpoint, mode);
-            ESP_LOGI(TAG, "DHT11 temperature: %.1f C, humidity: %.1f%%",
-                     last_reading.temperature, last_reading.humidity);
+            if (now - last_success_log >= pdMS_TO_TICKS(30000)) {
+                ESP_LOGI(TAG, "DHT11 temperature: %.1f C, humidity: %.1f%%",
+                         last_reading.temperature, last_reading.humidity);
+                last_success_log = now;
+            }
         } else if (event.type == APP_EVENT_SET_MODE) {
             if (event.mode >= THERMOSTAT_OFF &&
                 event.mode <= THERMOSTAT_FAN) {

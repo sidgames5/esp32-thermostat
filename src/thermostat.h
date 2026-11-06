@@ -20,6 +20,7 @@ typedef struct {
     TickType_t on_time_in_window;
     TickType_t last_accounting;
     bool usage_initialized;
+    bool transition_initialized;
 } thermostat_relay_t;
 
 const char *thermostat_mode_name(thermostat_mode_t mode);
