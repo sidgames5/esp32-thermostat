@@ -14,6 +14,12 @@ Note about temperature sensing: currently the prototype uses a DHT11 and the fir
 
 The firmware is written in the C programming language with the ESP-IDF HAL framework and PlatformIO as the build system.
 
+The application is organized as FreeRTOS tasks. The joystick and DHT11 tasks
+publish typed events to an application queue, while the thermostat task owns
+relay and LCD state. Future Wi-Fi, MQTT, Zigbee, or other connectivity tasks
+can publish control events through the same queue without adding more polling
+logic to the thermostat task.
+
 ## Building Automation
 
 Firmware will soon support MQTT, Matter/IP, BACnet/IP, and on supported ESP32 models, Zigbee and Thread.

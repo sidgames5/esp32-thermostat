@@ -1,15 +1,31 @@
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
 
+#include "app_events.h"
 #include "dht11.h"
 #include "hardware.h"
 #include "joystick.h"
 #include "lcd.h"
 #include "thermostat.h"
 
-static const char *const TAG = "HELLO";
+static const char *const TAG = "thermostat";
+static QueueHandle_t app_event_queue;
+
+esp_err_t app_post_event(const app_event_t *event)
+{
+    if (event == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (app_event_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return xQueueSend(app_event_queue, event, 0) == pdTRUE
+               ? ESP_OK
+               : ESP_ERR_TIMEOUT;
+}
 
 static thermostat_mode_t next_mode(thermostat_mode_t mode, int direction)
 {
@@ -34,34 +50,82 @@ static float next_setpoint(float setpoint, int direction)
     return setpoint;
 }
 
-static void handle_joystick(int x_raw,
-                            int y_raw,
-                            TickType_t now,
-                            thermostat_mode_t *mode,
-                            float *setpoint,
-                            int *last_horizontal_direction,
-                            int *last_vertical_direction,
-                            TickType_t *last_control_action,
-                            bool have_reading,
-                            const dht11_reading_t *last_reading,
-                            thermostat_relay_t *heating_relay,
-                            thermostat_relay_t *cooling_relay,
-                            thermostat_relay_t *fan_relay)
+static void joystick_task(void *arg)
+{
+    (void)arg;
+    adc_oneshot_unit_handle_t adc_handle;
+    if (joystick_initialize(&adc_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "Joystick task stopped because ADC initialization failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    for (;;) {
+        app_event_t event = {.type = APP_EVENT_JOYSTICK};
+        esp_err_t x_result = adc_oneshot_read(
+            adc_handle, ADC_CHANNEL_3, &event.joystick.x_raw);
+        esp_err_t y_result = adc_oneshot_read(
+            adc_handle, ADC_CHANNEL_0, &event.joystick.y_raw);
+
+        if (x_result != ESP_OK || y_result != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to read joystick: X=%s Y=%s",
+                     esp_err_to_name(x_result), esp_err_to_name(y_result));
+        } else if (app_post_event(&event) != ESP_OK) {
+            ESP_LOGW(TAG, "Dropping joystick event because event queue is full");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+}
+
+static void sensor_task(void *arg)
+{
+    (void)arg;
+    TickType_t next_read = xTaskGetTickCount() + pdMS_TO_TICKS(2000);
+
+    for (;;) {
+        vTaskDelayUntil(&next_read, pdMS_TO_TICKS(2000));
+
+        app_event_t event = {.type = APP_EVENT_SENSOR_READING};
+        esp_err_t result = dht11_read(&event.sensor_reading);
+        if (result != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to read DHT11: %s", esp_err_to_name(result));
+            continue;
+        }
+
+        if (app_post_event(&event) != ESP_OK) {
+            ESP_LOGW(TAG, "Dropping sensor event because event queue is full");
+        }
+    }
+}
+
+static void apply_joystick_event(const app_event_t *event,
+                                 TickType_t now,
+                                 thermostat_mode_t *mode,
+                                 float *setpoint,
+                                 int *last_horizontal_direction,
+                                 int *last_vertical_direction,
+                                 TickType_t *last_control_action,
+                                 bool have_reading,
+                                 const dht11_reading_t *last_reading,
+                                 thermostat_relay_t *heating_relay,
+                                 thermostat_relay_t *cooling_relay,
+                                 thermostat_relay_t *fan_relay)
 {
     static const TickType_t control_cooldown = pdMS_TO_TICKS(300);
     int horizontal_direction = joystick_direction(
-        joystick_normalize(x_raw));
+        joystick_normalize(event->joystick.x_raw));
     int vertical_direction = joystick_direction(
-        joystick_normalize(y_raw));
+        joystick_normalize(event->joystick.y_raw));
     bool new_horizontal_direction =
         horizontal_direction != 0 &&
         horizontal_direction != *last_horizontal_direction;
     bool new_vertical_direction =
         vertical_direction != 0 &&
         vertical_direction != *last_vertical_direction;
-    bool can_act = now - *last_control_action >= control_cooldown;
 
-    if (can_act && (new_horizontal_direction || new_vertical_direction)) {
+    if (now - *last_control_action >= control_cooldown &&
+        (new_horizontal_direction || new_vertical_direction)) {
         if (new_horizontal_direction) {
             *mode = next_mode(*mode, horizontal_direction);
         }
@@ -82,19 +146,9 @@ static void handle_joystick(int x_raw,
     *last_vertical_direction = vertical_direction;
 }
 
-void app_main(void)
+static void thermostat_task(void *arg)
 {
-    ESP_LOGI(TAG, "Hello NodeMCU!");
-    hardware_initialize_gpio();
-    lcd_initialize();
-    thermostat_show_loading(0);
-
-    adc_oneshot_unit_handle_t adc_handle;
-    if (joystick_initialize(&adc_handle) != ESP_OK) {
-        lcd_show("ADC init failed", "");
-        return;
-    }
-
+    (void)arg;
     thermostat_mode_t mode = THERMOSTAT_OFF;
     float setpoint = 72.0f;
     dht11_reading_t last_reading = {0};
@@ -103,58 +157,93 @@ void app_main(void)
     int last_vertical_direction = 0;
     TickType_t last_control_action = 0;
     TickType_t last_loading_update = 0;
-    TickType_t last_dht11_read = 0;
     uint8_t loading_frame = 0;
     thermostat_relay_t heating_relay = {false, 0};
     thermostat_relay_t cooling_relay = {false, 0};
     thermostat_relay_t fan_relay = {false, 0};
 
+    thermostat_show_loading(0);
+
     for (;;) {
-        int joystick_x;
-        int joystick_y;
-        esp_err_t x_result = adc_oneshot_read(
-            adc_handle, ADC_CHANNEL_3, &joystick_x);
-        esp_err_t y_result = adc_oneshot_read(
-            adc_handle, ADC_CHANNEL_0, &joystick_y);
+        app_event_t event;
+        bool received = xQueueReceive(
+            app_event_queue, &event, pdMS_TO_TICKS(100)) == pdTRUE;
         TickType_t now = xTaskGetTickCount();
 
         if (!have_reading &&
             now - last_loading_update >= pdMS_TO_TICKS(500)) {
-            loading_frame++;
-            thermostat_show_loading(loading_frame);
+            thermostat_show_loading(++loading_frame);
             last_loading_update = now;
         }
 
-        if (x_result != ESP_OK || y_result != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read joystick: X=%s Y=%s",
-                     esp_err_to_name(x_result), esp_err_to_name(y_result));
-        } else {
-            handle_joystick(
-                joystick_x, joystick_y, now, &mode, &setpoint,
+        if (!received) {
+            continue;
+        }
+
+        if (event.type == APP_EVENT_JOYSTICK) {
+            apply_joystick_event(
+                &event, now, &mode, &setpoint,
                 &last_horizontal_direction, &last_vertical_direction,
                 &last_control_action, have_reading, &last_reading,
                 &heating_relay, &cooling_relay, &fan_relay);
-        }
-
-        if (now - last_dht11_read >= pdMS_TO_TICKS(2000)) {
-            dht11_reading_t reading;
-            esp_err_t result = dht11_read(&reading);
-            if (result != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to read DHT11: %s",
-                         esp_err_to_name(result));
+        } else if (event.type == APP_EVENT_SENSOR_READING) {
+            last_reading = event.sensor_reading;
+            have_reading = true;
+            thermostat_set_relays(mode, last_reading.temperature, setpoint, now,
+                                  &heating_relay, &cooling_relay, &fan_relay);
+            thermostat_show_reading(&last_reading, setpoint, mode);
+            ESP_LOGI(TAG, "DHT11 temperature: %.1f C, humidity: %.1f%%",
+                     last_reading.temperature, last_reading.humidity);
+        } else if (event.type == APP_EVENT_SET_MODE) {
+            if (event.mode >= THERMOSTAT_OFF &&
+                event.mode <= THERMOSTAT_FAN) {
+                mode = event.mode;
+                if (have_reading) {
+                    thermostat_set_relays(
+                        mode, last_reading.temperature, setpoint, now,
+                        &heating_relay, &cooling_relay, &fan_relay);
+                    thermostat_show_reading(&last_reading, setpoint, mode);
+                }
             } else {
-                last_reading = reading;
-                have_reading = true;
-                thermostat_set_relays(mode, reading.temperature, setpoint, now,
-                                      &heating_relay, &cooling_relay,
-                                      &fan_relay);
-                thermostat_show_reading(&reading, setpoint, mode);
-                ESP_LOGI(TAG, "DHT11 temperature: %.1f C, humidity: %.1f%%",
-                         reading.temperature, reading.humidity);
+                ESP_LOGW(TAG, "Ignoring invalid thermostat mode: %d",
+                         event.mode);
             }
-            last_dht11_read = now;
+        } else if (event.type == APP_EVENT_SET_SETPOINT) {
+            if (event.setpoint >= 50.0f && event.setpoint <= 95.0f) {
+                setpoint = event.setpoint;
+                if (have_reading) {
+                    thermostat_set_relays(
+                        mode, last_reading.temperature, setpoint, now,
+                        &heating_relay, &cooling_relay, &fan_relay);
+                    thermostat_show_reading(&last_reading, setpoint, mode);
+                }
+            } else {
+                ESP_LOGW(TAG, "Ignoring invalid thermostat setpoint: %.1f",
+                         event.setpoint);
+            }
         }
+    }
+}
 
-        vTaskDelay(pdMS_TO_TICKS(250));
+void app_main(void)
+{
+    ESP_LOGI(TAG, "Starting thermostat tasks");
+    hardware_initialize_gpio();
+    lcd_initialize();
+
+    app_event_queue = xQueueCreate(8, sizeof(app_event_t));
+    if (app_event_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create application event queue");
+        lcd_show("Queue init failed", "");
+        return;
+    }
+
+    if (xTaskCreate(joystick_task, "joystick", 3072, NULL, 5, NULL) !=
+            pdPASS ||
+        xTaskCreate(sensor_task, "sensor", 3072, NULL, 5, NULL) != pdPASS ||
+        xTaskCreate(thermostat_task, "thermostat", 4096, NULL, 5, NULL) !=
+            pdPASS) {
+        ESP_LOGE(TAG, "Failed to create one or more application tasks");
+        lcd_show("Task init failed", "");
     }
 }
