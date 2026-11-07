@@ -1,6 +1,6 @@
 // | ~~~~~~~~~~~~~~~~~~~~~~~ |
 // |                         |
-// |     CONFIGURATION.H     |
+// | CONFIGURATION_EXAMPLE.H |
 // |                         |
 // | ~~~~~~~~~~~~~~~~~~~~~~~ |
 
@@ -8,14 +8,16 @@
 // |   DEBUG SAFETY BYPASSES |
 // | ~~~~~~~~~~~~~~~~~~~~~~~ |
 //
-// Bench debugging only. Keep all values at 0 for normal operation. Enabling
-// these can damage your air handler and possibly void your home warranty.
+// These switches are for bench debugging only. Keep all of them at 0 for
+// normal operation. Bypassing these protections can damage hardware or create
+// unsafe temperatures.
 
 #define DEBUG_BYPASS_SENSOR_VALIDATION 0
 #define DEBUG_BYPASS_SENSOR_TIMEOUT 0
 #define DEBUG_BYPASS_TEMPERATURE_CUTOFF 0
 #define DEBUG_BYPASS_RELAY_TIMING 0
 #define DEBUG_BYPASS_RELAY_RUNTIME_LIMITS 0
+#define DEBUG_SHOW_IP 0
 
 // | ~~~~~~~~~~~~~ |
 // |     Wi-Fi     |
