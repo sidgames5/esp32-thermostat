@@ -98,12 +98,14 @@ static void joystick_task(void *arg)
 static void sensor_task(void *arg)
 {
     (void)arg;
-    TickType_t next_read = xTaskGetTickCount() + pdMS_TO_TICKS(2000);
+    TickType_t next_read = xTaskGetTickCount() +
+                           pdMS_TO_TICKS(THERMOSTAT_SENSOR_POLL_INTERVAL_MS);
     TickType_t last_failure_log = 0;
     bool sensor_failure_reported = false;
 
     for (;;) {
-        vTaskDelayUntil(&next_read, pdMS_TO_TICKS(2000));
+        vTaskDelayUntil(
+            &next_read, pdMS_TO_TICKS(THERMOSTAT_SENSOR_POLL_INTERVAL_MS));
 
         app_event_t event = {.type = APP_EVENT_SENSOR_READING};
         esp_err_t result = dht11_read(&event.sensor_reading);
@@ -220,6 +222,9 @@ static void thermostat_task(void *arg)
     TickType_t last_control_action = 0;
     TickType_t last_sensor_reading = 0;
     TickType_t last_success_log = 0;
+    float temperature_sum = 0.0f;
+    float humidity_sum = 0.0f;
+    uint32_t sensor_samples = 0;
     TickType_t next_display_switch =
         xTaskGetTickCount() + pdMS_TO_TICKS(2000);
     bool show_ip = false;
@@ -295,9 +300,23 @@ static void thermostat_task(void *arg)
                 continue;
             }
             last_reading = event.sensor_reading;
-            have_reading = true;
             last_sensor_reading = now;
             sensor_timeout_reported = false;
+            temperature_sum += event.sensor_reading.temperature;
+            humidity_sum += event.sensor_reading.humidity;
+            sensor_samples++;
+            if (sensor_samples <
+                THERMOSTAT_TEMPERATURE_AVERAGING_MS /
+                    THERMOSTAT_SENSOR_POLL_INTERVAL_MS) {
+                continue;
+            }
+            last_reading.temperature =
+                temperature_sum / (float)sensor_samples;
+            last_reading.humidity = humidity_sum / (float)sensor_samples;
+            temperature_sum = 0.0f;
+            humidity_sum = 0.0f;
+            sensor_samples = 0;
+            have_reading = true;
             mqtt_publish_temperature(&last_reading);
             thermostat_set_relays(mode, last_reading.temperature,
                                   lower_setpoint, upper_setpoint, now,
