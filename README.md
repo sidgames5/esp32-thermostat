@@ -7,6 +7,9 @@ Fully functional smart thermostat using only commonly available components.
 1. Assemble the components on the breadboard according to the instructions (TBD).
 2. Clone this repository.
 3. Rename `src/Configuration_example.h` to `src/Configuration.h` and fill out all the fields to fit your setup.
+4. Set the pin numbers in `src/hardware_config.h` to match the physical layout of your specific ESP32 board configuration.
+5. Check `platformio.ini` to make sure your ESP32 board has an environment there. If not, please add it and submit a pull request.
+6. Run `pio run -e [environment] --target upload`
 
 
 ## Hardware
@@ -27,6 +30,12 @@ relay and LCD state. Wi-Fi, MQTT, Zigbee, or other connectivity tasks can
 publish control events through the same queue without adding more polling logic
 to the thermostat task. Wi-Fi and MQTT use this integration today.
 
+The displayed and control temperature is the average of DHT11 samples collected
+over 10 seconds. If that averaged temperature does not change while heating or cooling is active
+for the configured no-change interval, the firmware turns off all relays,
+displays `THERMAL RUNAWAY` on the LCD, and latches the fault. The thermostat
+ignores further control events until power is removed and restored.
+
 If the LCD remains on `Waiting for data`, check that the DHT11 data line is
 connected to GPIO 32 and has a pull-up resistor. The firmware retries failed
 sensor reads and rate-limits the corresponding serial warning; a successful
@@ -36,20 +45,6 @@ reading is logged as `DHT11 reading recovered`.
 
 ## Building Automation
 
-MQTT is supported when `ENABLE_MQTT` is defined in
-[`src/Configuration.h`](src/Configuration.h). Configure the broker URI,
-optional credentials, client ID, base topic, and Home Assistant discovery
-prefix there. On connection it publishes a retained MQTT Climate discovery
-entity under `<discovery-prefix>/climate/<client-id>/config`. The firmware
-publishes retained state to `<base>/temperature/current`,
-`<base>/temperature/low`, `<base>/temperature/high`, and `<base>/mode`, and
-accepts commands on `<base>/temperature/low/set`,
-`<base>/temperature/high/set`, and `<base>/mode/set`. The low and high
-temperatures are the heating and cooling bounds. The joystick moves up or down
-to adjust the selected bound, left or right to cycle through thermostat modes,
-and clicking selects the lower or upper bound. The LCD marks the selected
-bound with `*`. The joystick click switch is connected to GPIO 34.
-Home Assistant uses `off`, `heat_cool`, and `fan_only`;
-legacy heat and cool commands are treated as auto.
+Home Assistant support is working through MQTT. You can configure Wi-Fi credentials and MQTT broker details in `src/Configuration.h`.
 
-Protocols to be supported in the future: Matter/IP, BACnet/IP, Zigbee (on supported ESP32 models), Matter/Thread (on supported ESP32 models)
+Protocols to be supported in the future: BACnet/IP, Matter/IP, Zigbee (on supported ESP32 models), Matter/Thread (on supported ESP32 models)

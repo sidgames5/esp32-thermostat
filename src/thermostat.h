@@ -34,6 +34,7 @@ void thermostat_set_relays(thermostat_mode_t mode,
 void thermostat_disable_relays(thermostat_relay_t *heating_relay,
                                thermostat_relay_t *cooling_relay,
                                thermostat_relay_t *fan_relay);
+void thermostat_show_thermal_runaway(void);
 void thermostat_show_reading(const dht11_reading_t *reading,
                              float lower_setpoint,
                              float upper_setpoint,

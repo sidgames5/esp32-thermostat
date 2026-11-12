@@ -229,13 +229,18 @@ static void thermostat_task(void *arg)
         xTaskGetTickCount() + pdMS_TO_TICKS(2000);
     bool show_ip = false;
     bool sensor_timeout_reported = false;
+    bool thermal_runaway = false;
+    bool runaway_monitor_initialized = false;
+    float runaway_monitor_temperature = 0.0f;
+    TickType_t runaway_unchanged_since = 0;
+    bool runaway_monitor_heating = false;
+    bool runaway_monitor_cooling = false;
     thermostat_relay_t heating_relay = {0};
     thermostat_relay_t cooling_relay = {0};
     thermostat_relay_t fan_relay = {0};
 
     if (DEBUG_BYPASS_SENSOR_VALIDATION || DEBUG_BYPASS_SENSOR_TIMEOUT ||
-        DEBUG_BYPASS_TEMPERATURE_CUTOFF || DEBUG_BYPASS_RELAY_TIMING ||
-        DEBUG_BYPASS_RELAY_RUNTIME_LIMITS) {
+        DEBUG_BYPASS_RELAY_TIMING || DEBUG_BYPASS_RELAY_RUNTIME_LIMITS) {
         ESP_LOGW(TAG, "DEBUG SAFETY BYPASSES ENABLED");
     }
 
@@ -248,6 +253,12 @@ static void thermostat_task(void *arg)
         bool received = xQueueReceive(
             app_event_queue, &event, pdMS_TO_TICKS(100)) == pdTRUE;
         TickType_t now = xTaskGetTickCount();
+
+        if (thermal_runaway) {
+            thermostat_disable_relays(
+                &heating_relay, &cooling_relay, &fan_relay);
+            continue;
+        }
 
         if (!DEBUG_BYPASS_SENSOR_TIMEOUT && have_reading &&
             now - last_sensor_reading >=
@@ -299,7 +310,6 @@ static void thermostat_task(void *arg)
                     &heating_relay, &cooling_relay, &fan_relay);
                 continue;
             }
-            last_reading = event.sensor_reading;
             last_sensor_reading = now;
             sensor_timeout_reported = false;
             temperature_sum += event.sensor_reading.temperature;
@@ -310,9 +320,11 @@ static void thermostat_task(void *arg)
                     THERMOSTAT_SENSOR_POLL_INTERVAL_MS) {
                 continue;
             }
-            last_reading.temperature =
-                temperature_sum / (float)sensor_samples;
-            last_reading.humidity = humidity_sum / (float)sensor_samples;
+            dht11_reading_t averaged_reading = {
+                .temperature = temperature_sum / (float)sensor_samples,
+                .humidity = humidity_sum / (float)sensor_samples,
+            };
+            last_reading = averaged_reading;
             temperature_sum = 0.0f;
             humidity_sum = 0.0f;
             sensor_samples = 0;
@@ -321,6 +333,33 @@ static void thermostat_task(void *arg)
             thermostat_set_relays(mode, last_reading.temperature,
                                   lower_setpoint, upper_setpoint, now,
                                   &heating_relay, &cooling_relay, &fan_relay);
+            bool heating_active = heating_relay.active;
+            bool cooling_active = cooling_relay.active;
+            if (!heating_active && !cooling_active) {
+                runaway_monitor_initialized = false;
+            } else if (!runaway_monitor_initialized ||
+                       runaway_monitor_heating != heating_active ||
+                       runaway_monitor_cooling != cooling_active ||
+                       fabsf(last_reading.temperature -
+                             runaway_monitor_temperature) >=
+                           THERMOSTAT_RUNAWAY_MIN_CHANGE_C) {
+                runaway_monitor_initialized = true;
+                runaway_monitor_temperature = last_reading.temperature;
+                runaway_unchanged_since = now;
+                runaway_monitor_heating = heating_active;
+                runaway_monitor_cooling = cooling_active;
+            } else if (now - runaway_unchanged_since >=
+                       pdMS_TO_TICKS(THERMOSTAT_RUNAWAY_NO_CHANGE_MS)) {
+                thermal_runaway = true;
+                thermostat_disable_relays(
+                    &heating_relay, &cooling_relay, &fan_relay);
+                thermostat_show_thermal_runaway();
+                ESP_LOGE(TAG,
+                         "THERMAL RUNAWAY: temperature unchanged at %.1f C "
+                         "while conditioning; power cycle required",
+                         last_reading.temperature);
+                continue;
+            }
             thermostat_show_reading(&last_reading, lower_setpoint,
                                     upper_setpoint, editing_upper_setpoint,
                                     mode, heating_relay.active,

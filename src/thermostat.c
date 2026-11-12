@@ -122,12 +122,6 @@ void thermostat_set_relays(thermostat_mode_t mode,
     }
 
     float temperature = temperature_celsius * 9.0f / 5.0f + 32.0f;
-    if (!DEBUG_BYPASS_TEMPERATURE_CUTOFF &&
-        temperature >= THERMOSTAT_MAX_SAFE_TEMP_F) {
-        ESP_LOGE(TAG, "Over-temperature cutoff at %.1f F", temperature);
-        thermostat_disable_relays(heating_relay, cooling_relay, fan_relay);
-        return;
-    }
     if (mode == THERMOSTAT_OFF) {
         thermostat_disable_relays(heating_relay, cooling_relay, fan_relay);
         return;
@@ -203,6 +197,11 @@ void thermostat_disable_relays(thermostat_relay_t *heating_relay,
     force_relay_off(PIN_RELAY_HEAT, heating_relay, now);
     force_relay_off(PIN_RELAY_COOL, cooling_relay, now);
     force_relay_off(PIN_RELAY_FAN, fan_relay, now);
+}
+
+void thermostat_show_thermal_runaway(void)
+{
+    lcd_show("THERMAL RUNAWAY", "POWER CYCLE");
 }
 
 void thermostat_show_reading(const dht11_reading_t *reading,

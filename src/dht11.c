@@ -3,9 +3,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
 #include "esp_rom_sys.h"
 
 #include "hardware_config.h"
+
+static int64_t last_read_time_us;
 
 static bool wait_for_level(int level, uint32_t timeout_us)
 {
@@ -22,6 +25,20 @@ esp_err_t dht11_read(dht11_reading_t *reading)
 {
     if (reading == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    for (;;) {
+        int64_t now_us = esp_timer_get_time();
+        int64_t elapsed_us = now_us - last_read_time_us;
+        if (last_read_time_us == 0 || elapsed_us >= 2000000) {
+            last_read_time_us = now_us;
+            break;
+        }
+
+        int64_t remaining_us = 2000000 - elapsed_us;
+        TickType_t delay_ticks =
+            pdMS_TO_TICKS((remaining_us + 999) / 1000);
+        vTaskDelay(delay_ticks > 0 ? delay_ticks : 1);
     }
 
     gpio_set_direction(PIN_DHT11, GPIO_MODE_OUTPUT);
